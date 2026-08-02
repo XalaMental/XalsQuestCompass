@@ -946,8 +946,9 @@ local function CreateMainFrame()
 		end
 	end)
 
-	-- Allow closing with Escape like other Blizzard panels
-	tinsert(UISpecialFrames, "XalsQuestCompassFrame")
+	-- Deliberately NOT registered in UISpecialFrames -- Escape should
+	-- not close this window (e.g. while adjusting your camera or
+	-- backing out of a menu mid-navigation).
 end
 
 -------------------------------------------------
