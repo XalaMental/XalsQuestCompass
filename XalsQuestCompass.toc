@@ -1,0 +1,9 @@
+## Interface: 120007
+## Title: Xal's Quest Compass
+## Notes: Toggleable list of quests that are ready to turn in, with tracking, navigation, and appearance options.
+## Author: Xal
+## Version: 1.0.0
+## SavedVariables: XalsQuestCompassDB
+## IconTexture: Interface\AddOns\XalsQuestCompass\Icon.png
+
+XalsQuestCompass.lua
