@@ -463,7 +463,11 @@ end
 -------------------------------------------------
 
 local function RefreshList()
-	if not QTT then return end
+	-- scrollChild is one of the last elements built in CreateMainFrame,
+	-- so checking for it confirms the window actually finished
+	-- constructing -- guards against any code path that fires this
+	-- mid-build (e.g. a size-recalculation triggered by SetBackdrop).
+	if not QTT or not QTT.scrollChild then return end
 
 	local quests = GetTurnInQuests()
 
@@ -753,7 +757,10 @@ local function CreateMainFrame()
 		QTT:SetMinResize(300, 220)
 		QTT:SetMaxResize(700, 900)
 	end
-	QTT:SetScript("OnSizeChanged", OnWindowResized)
+	-- OnSizeChanged handler is attached at the very end of this function,
+	-- once every element it might touch (scrollChild, noQuestsText, etc.)
+	-- actually exists -- SetBackdrop() below can itself trigger a size
+	-- recalculation, and attaching too early caused it to fire mid-build.
 
 	local p = XalsQuestCompassDB.point
 	QTT:SetPoint(p[1], UIParent, p[2], p[3], p[4])
@@ -949,6 +956,10 @@ local function CreateMainFrame()
 	-- Deliberately NOT registered in UISpecialFrames -- Escape should
 	-- not close this window (e.g. while adjusting your camera or
 	-- backing out of a menu mid-navigation).
+
+	-- Safe to attach now -- everything RefreshList/OnWindowResized touches
+	-- (scrollChild, noQuestsText, countText, footer buttons) exists at this point.
+	QTT:SetScript("OnSizeChanged", OnWindowResized)
 end
 
 -------------------------------------------------
