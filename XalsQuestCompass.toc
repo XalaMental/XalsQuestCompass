@@ -3,6 +3,7 @@
 ## Notes: Toggleable list of quests that are ready to turn in, with tracking, navigation, and appearance options.
 ## Author: Xal
 ## Version: 1.0.0
+## X-Curse-Project-ID: 1635595
 ## SavedVariables: XalsQuestCompassDB
 ## IconTexture: Interface\AddOns\XalsQuestCompass\Icon.png
 
