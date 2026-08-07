@@ -75,6 +75,9 @@ local defaults = {
 	fontShadow = true,
 	useClassColor = false,
 	windowScale = 1.0,
+	autoTurnIn = false,
+	autoAccept = false,
+	readySound = false,
 }
 
 local function InitDB()
@@ -201,6 +204,53 @@ local function FormatDistance(info)
 	return ""
 end
 
+-- Appends "what you'll get" lines to a tooltip for a quest sitting in the log,
+-- using the quest-log reward query functions (these work by questID alone --
+-- no need to actually be at the quest-giver). GetQuestLogRewardXP is pcall'd
+-- since it's known to have been pulled from at least one WoW version in the
+-- past (Classic) with no official replacement -- if it's ever unavailable here
+-- too, XP just quietly drops off the tooltip instead of breaking it.
+local function AddRewardPreviewLines(tooltip, questID)
+	local addedAny = false
+
+	local money = GetQuestLogRewardMoney(questID)
+	if money and money > 0 then
+		tooltip:AddLine(GetCoinTextureString(money), 1, 0.82, 0)
+		addedAny = true
+	end
+
+	local xpOk, xp = pcall(GetQuestLogRewardXP, questID)
+	if xpOk and xp and xp > 0 then
+		tooltip:AddLine(string.format("%d XP", xp), 0.6, 0.6, 1)
+		addedAny = true
+	end
+
+	local numRewards = GetNumQuestLogRewards(questID) or 0
+	for i = 1, numRewards do
+		local itemName, _, numItems = GetQuestLogRewardInfo(i, questID)
+		if itemName then
+			tooltip:AddLine(numItems and numItems > 1 and (itemName .. " x" .. numItems) or itemName, 1, 1, 1)
+			addedAny = true
+		end
+	end
+
+	local numChoices = GetNumQuestLogChoices(questID) or 0
+	if numChoices > 1 then
+		tooltip:AddLine(string.format("Choose one of %d rewards", numChoices), 0.9, 0.9, 0.4)
+		addedAny = true
+	elseif numChoices == 1 then
+		local itemName = GetQuestLogChoiceInfo(1, questID)
+		if itemName then
+			tooltip:AddLine(itemName, 1, 1, 1)
+			addedAny = true
+		end
+	end
+
+	if addedAny then
+		tooltip:AddLine(" ")
+	end
+end
+
 -- Gets the map and normalized (0-1) coordinates of a quest's next
 -- waypoint (its turn-in location once it's ready), for building a
 -- TomTom-style waypoint command.
@@ -212,18 +262,29 @@ local function GetQuestWaypointCoords(questID)
 	return uiMapID, x, y
 end
 
--- If TomTom is installed, this fires its actual /way chat command
--- (via the same handler the game calls when you type it yourself --
--- no direct use of TomTom's Lua API) so TomTom's own arrow/waypoint UI
+-- If TomTom is installed, drops a waypoint through its public AddWaypoint API
+-- (the same call Xal's Xpedited Routes uses) so TomTom's own arrow/waypoint UI
 -- takes over, since that's generally the better navigation experience.
--- Returns true if a TomTom waypoint was sent.
+--
+-- This used to fire SlashCmdList["TOMTOM"] as if typing a slash command, but
+-- "TOMTOM" is the handler for /tomtom -- which just OPENS TomTom's options
+-- menu. The waypoint command /way is a separate handler ("TOMTOM_WAY"), so the
+-- old code popped the menu open on every click and never set a waypoint.
+-- Calling the API directly is simpler and sidesteps that entirely.
+-- Returns true if a TomTom waypoint was set.
 local function SendTomTomWaypoint(questID, title)
-	if not (SlashCmdList and SlashCmdList["TOMTOM"]) then return false end
+	if not (TomTom and TomTom.AddWaypoint) then return false end
 	local uiMapID, x, y = GetQuestWaypointCoords(questID)
 	if not uiMapID then return false end
-	local command = string.format("%d %.2f, %.2f %s", uiMapID, x * 100, y * 100, title or "Quest")
-	SlashCmdList["TOMTOM"](command)
-	return true
+	local ok = pcall(function()
+		TomTom:AddWaypoint(uiMapID, x, y, {
+			title = title or "Quest",
+			persistent = false,
+			minimap = true,
+			world = true,
+		})
+	end)
+	return ok
 end
 
 -- Points the player toward the given quest's turn-in. Prefers TomTom's
@@ -416,6 +477,7 @@ local function CreateRow(parent, index)
 		if not self.questID then return end
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 		GameTooltip:SetText(self.title:GetText() or "", 1, 1, 1)
+		AddRewardPreviewLines(GameTooltip, self.questID)
 		GameTooltip:AddLine("Track adds it to your objective tracker.", 0.7, 0.7, 0.7, true)
 		GameTooltip:AddLine("Navigate points the on-screen arrow at it.", 0.7, 0.7, 0.7, true)
 		GameTooltip:Show()
@@ -474,6 +536,9 @@ local function RefreshList()
 	-- Auto-show if a new quest became ready anywhere, regardless of the
 	-- zone filter -- while the window was closed.
 	local allReadyCount = CountAllReadyQuests()
+	if XalsQuestCompassDB.readySound and allReadyCount > lastReadyCountAll then
+		pcall(PlaySound, SOUNDKIT.READY_CHECK, "Master")
+	end
 	if XalsQuestCompassDB.autoShow and (allReadyCount > lastReadyCountAll) and not QTT:IsShown() then
 		QTT:Show()
 	end
@@ -598,9 +663,47 @@ local function CreateOptionsPanel()
 	end)
 	panel.minimapCB = minimapCB
 
+	-- Automation section
+	local automationTitle = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	automationTitle:SetPoint("TOPLEFT", minimapCB, "BOTTOMLEFT", 2, -20)
+	automationTitle:SetText("Automation")
+
+	local autoTurnInCB = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+	autoTurnInCB:SetPoint("TOPLEFT", automationTitle, "BOTTOMLEFT", -2, -12)
+	autoTurnInCB.Text:SetText("Automatically turn in quests with no reward choice to make")
+	autoTurnInCB:SetChecked(XalsQuestCompassDB.autoTurnIn)
+	autoTurnInCB:SetScript("OnClick", function(self)
+		XalsQuestCompassDB.autoTurnIn = self:GetChecked() and true or false
+	end)
+	panel.autoTurnInCB = autoTurnInCB
+
+	local autoAcceptCB = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+	autoAcceptCB:SetPoint("TOPLEFT", autoTurnInCB, "BOTTOMLEFT", 0, -8)
+	autoAcceptCB.Text:SetText("Automatically accept new quests offered by NPCs")
+	autoAcceptCB:SetChecked(XalsQuestCompassDB.autoAccept)
+	autoAcceptCB:SetScript("OnClick", function(self)
+		XalsQuestCompassDB.autoAccept = self:GetChecked() and true or false
+	end)
+	panel.autoAcceptCB = autoAcceptCB
+
+	local automationNote = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	automationNote:SetPoint("TOPLEFT", autoAcceptCB, "BOTTOMLEFT", 24, -4)
+	automationNote:SetPoint("RIGHT", -16, 0)
+	automationNote:SetJustifyH("LEFT")
+	automationNote:SetText("Skips quests with more than one reward to choose from, quests that cost money to turn in, and a few quest types known to behave oddly (escort, item-start, PvP-flagged) - those still open normally so you can handle them yourself. Hold Shift to pause automation at any time.")
+
+	local readySoundCB = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+	readySoundCB:SetPoint("TOPLEFT", automationNote, "BOTTOMLEFT", -24, -10)
+	readySoundCB.Text:SetText("Play a sound when a quest becomes ready to turn in")
+	readySoundCB:SetChecked(XalsQuestCompassDB.readySound)
+	readySoundCB:SetScript("OnClick", function(self)
+		XalsQuestCompassDB.readySound = self:GetChecked() and true or false
+	end)
+	panel.readySoundCB = readySoundCB
+
 	-- Appearance section
 	local appearanceTitle = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-	appearanceTitle:SetPoint("TOPLEFT", minimapCB, "BOTTOMLEFT", 2, -20)
+	appearanceTitle:SetPoint("TOPLEFT", readySoundCB, "BOTTOMLEFT", 2, -20)
 	appearanceTitle:SetText("Appearance")
 
 	local fontLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -714,6 +817,9 @@ local function CreateOptionsPanel()
 		autoNavCB:SetChecked(XalsQuestCompassDB.autoNavigateNearest)
 		zoneOnlyCB:SetChecked(XalsQuestCompassDB.currentZoneOnly)
 		minimapCB:SetChecked(not XalsQuestCompassDB.minimapHidden)
+		autoTurnInCB:SetChecked(XalsQuestCompassDB.autoTurnIn)
+		autoAcceptCB:SetChecked(XalsQuestCompassDB.autoAccept)
+		readySoundCB:SetChecked(XalsQuestCompassDB.readySound)
 		shadowCB:SetChecked(XalsQuestCompassDB.fontShadow)
 		classColorCB:SetChecked(XalsQuestCompassDB.useClassColor)
 		sizeSlider:SetValue(XalsQuestCompassDB.fontSize or 13)
@@ -1037,6 +1143,130 @@ local function CreateMinimapButton()
 end
 
 -------------------------------------------------
+-- Automation (auto turn-in / auto accept)
+-------------------------------------------------
+-- Both OFF by default -- opt-in only, never decided for the player.
+--
+-- Auto turn-in only completes a quest when there's nothing to actually decide:
+-- zero or one possible reward means there's no real choice, so it's handed in
+-- automatically. Two or more reward choices means a real decision, so it's left
+-- alone and the normal reward window opens for the player to pick themselves.
+-- Quests that cost money to turn in are also left alone, so this never spends
+-- the player's gold without asking.
+--
+-- Auto accept skips a few quest types known to behave oddly under automation
+-- (escort/item-start/area-trigger/adventure-map/PvP-flagged quests) and leaves
+-- those for the player to accept normally, rather than risk mishandling them.
+--
+-- Holding Shift pauses both, at any time, so the player can always step in.
+
+local function AutomationPaused()
+	return IsShiftKeyDown()
+end
+
+-- Turn-in side: NPCs with a Gossip frame (most modern quest-givers)
+local function HandleGossipShow()
+	if AutomationPaused() then return end
+
+	if XalsQuestCompassDB.autoTurnIn and C_GossipInfo.GetActiveQuests then
+		for _, questInfo in ipairs(C_GossipInfo.GetActiveQuests()) do
+			if questInfo.isComplete then
+				pcall(C_GossipInfo.SelectActiveQuest, questInfo.questID)
+				return
+			end
+		end
+	end
+
+	if XalsQuestCompassDB.autoAccept and C_GossipInfo.GetAvailableQuests then
+		for _, questInfo in ipairs(C_GossipInfo.GetAvailableQuests()) do
+			pcall(C_GossipInfo.SelectAvailableQuest, questInfo.questID)
+			return
+		end
+	end
+end
+
+-- Turn-in side: NPCs with a plain quest list and no Gossip frame (index-based, not questID-based)
+local function HandleQuestGreeting()
+	if AutomationPaused() then return end
+
+	if XalsQuestCompassDB.autoTurnIn then
+		for index = 1, GetNumActiveQuests() do
+			local _, isComplete = GetActiveTitle(index)
+			if isComplete then
+				pcall(SelectActiveQuest, index)
+				return
+			end
+		end
+	end
+
+	if XalsQuestCompassDB.autoAccept then
+		if GetNumAvailableQuests() > 0 then
+			pcall(SelectAvailableQuest, 1)
+			return
+		end
+	end
+end
+
+-- Accept side: the quest-detail panel just opened for an offered quest
+local function HandleQuestDetail(questStartItemID)
+	if not XalsQuestCompassDB.autoAccept then return end
+	if AutomationPaused() then return end
+
+	-- Already auto-accepted by the game (e.g. certain scripted/story beats) --
+	-- this is just a notification popup, not a real accept decision.
+	if QuestGetAutoAccept and QuestGetAutoAccept() then
+		AcknowledgeAutoAcceptQuest()
+		local questID = GetQuestID and GetQuestID()
+		if questID and questID > 0 and RemoveAutoQuestPopUp then
+			RemoveAutoQuestPopUp(questID)
+		end
+		return
+	end
+
+	-- Skip quest types known to behave oddly under automation -- leave these
+	-- for the player to accept normally rather than risk mishandling them.
+	if questStartItemID and questStartItemID > 0 then return end
+	if QuestIsFromAreaTrigger and QuestIsFromAreaTrigger() then return end
+	if QuestIsFromAdventureMap and QuestIsFromAdventureMap() then return end
+	if QuestFlagsPVP and QuestFlagsPVP() then return end
+
+	pcall(AcceptQuest)
+end
+
+-- Accept side: party-shared / escort-style quests ask for a separate confirm
+local function HandleQuestAcceptConfirm()
+	if not XalsQuestCompassDB.autoAccept then return end
+	if AutomationPaused() then return end
+	pcall(ConfirmAcceptQuest)
+end
+
+-- Turn-in side: the progress panel just opened -- advance to the reward panel
+-- if every objective is actually done (a quest can be "in progress" here
+-- without being complete yet).
+local function HandleQuestProgress()
+	if not XalsQuestCompassDB.autoTurnIn then return end
+	if AutomationPaused() then return end
+	if IsQuestCompletable and IsQuestCompletable() then
+		pcall(CompleteQuest)
+	end
+end
+
+-- Turn-in side: the reward panel just opened -- complete it only when there's
+-- nothing to actually choose, and never when it costs the player money.
+local function HandleQuestComplete()
+	if not XalsQuestCompassDB.autoTurnIn then return end
+	if AutomationPaused() then return end
+
+	local numChoices = GetNumQuestChoices()
+	if numChoices > 1 then return end -- a real choice -- leave it for the player
+
+	local money = GetQuestMoneyToGet()
+	if money and money > 0 then return end -- never auto-spend the player's gold
+
+	pcall(GetQuestReward, numChoices == 1 and 1 or 0)
+end
+
+-------------------------------------------------
 -- Events
 -------------------------------------------------
 
@@ -1049,6 +1279,12 @@ eventFrame:RegisterEvent("SUPER_TRACKING_CHANGED")
 eventFrame:RegisterEvent("ZONE_CHANGED")
 eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
 eventFrame:RegisterEvent("ZONE_CHANGED_INDOORS")
+eventFrame:RegisterEvent("GOSSIP_SHOW")
+eventFrame:RegisterEvent("QUEST_GREETING")
+eventFrame:RegisterEvent("QUEST_DETAIL")
+eventFrame:RegisterEvent("QUEST_ACCEPT_CONFIRM")
+eventFrame:RegisterEvent("QUEST_PROGRESS")
+eventFrame:RegisterEvent("QUEST_COMPLETE")
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
 	if event == "ADDON_LOADED" then
@@ -1061,6 +1297,18 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
 			print("|cff33ff99Xal's Quest Compass|r loaded. Type |cffffff00/xqc|r to toggle the window, or click the minimap button.")
 			self:UnregisterEvent("ADDON_LOADED")
 		end
+	elseif event == "GOSSIP_SHOW" then
+		HandleGossipShow()
+	elseif event == "QUEST_GREETING" then
+		HandleQuestGreeting()
+	elseif event == "QUEST_DETAIL" then
+		HandleQuestDetail(arg1)
+	elseif event == "QUEST_ACCEPT_CONFIRM" then
+		HandleQuestAcceptConfirm()
+	elseif event == "QUEST_PROGRESS" then
+		HandleQuestProgress()
+	elseif event == "QUEST_COMPLETE" then
+		HandleQuestComplete()
 	else
 		RefreshList()
 	end
