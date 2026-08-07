@@ -1,0 +1,17 @@
+# Classic Era (Vanilla) build. The WoW client auto-loads this _Vanilla.toc on
+# the Classic Era flavor; same folder, same shared Lua as retail and MoP
+# Classic.
+# Interface current as of Classic Era patch 1.15.x (verified 2026-08-06 via
+# warcraft.wiki.gg, same client Xal's Xpedited Routes already ships on). If a
+# patch flags "out of date", get the live number in-game with:
+# /dump select(4, GetBuildInfo())
+## Interface: 11509
+## Title: Xal's Quest Compass
+## Notes: Toggleable list of quests that are ready to turn in, with tracking, navigation, and appearance options.
+## Author: Xal
+## Version: 1.0.0
+## X-Curse-Project-ID: 1635595
+## SavedVariables: XalsQuestCompassDB
+## IconTexture: Interface\AddOns\XalsQuestCompass\Icon.png
+
+XalsQuestCompass.lua

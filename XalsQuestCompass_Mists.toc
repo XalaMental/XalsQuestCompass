@@ -1,0 +1,17 @@
+# MoP Classic build. The WoW client auto-loads this _Mists.toc on the Mists of
+# Pandaria Classic flavor and the base XalsQuestCompass.toc on retail - same
+# folder, one shared Lua codebase.
+# MoP Classic interface, current as of patch 5.5.0.x (verified 2026-08-05 via
+# warcraft.wiki.gg, same client Xal's Xpedited Routes already ships on). If a
+# future patch flags "out of date" again, get the live number in-game with:
+# /dump select(4, GetBuildInfo())
+## Interface: 50504
+## Title: Xal's Quest Compass
+## Notes: Toggleable list of quests that are ready to turn in, with tracking, navigation, and appearance options.
+## Author: Xal
+## Version: 1.0.0
+## X-Curse-Project-ID: 1635595
+## SavedVariables: XalsQuestCompassDB
+## IconTexture: Interface\AddOns\XalsQuestCompass\Icon.png
+
+XalsQuestCompass.lua

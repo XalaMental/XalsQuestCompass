@@ -16,6 +16,117 @@ local GREY = { 0.6, 0.6, 0.6 }
 local WHITE = { 1, 1, 1 }
 
 -------------------------------------------------
+-- Compat (Retail vs Classic)
+-------------------------------------------------
+-- MoP Classic and Classic Era share one codebase under the hood (confirmed by
+-- diffing the client UI trees - only ~80 files differ out of ~3000), so
+-- "Classic" below covers both flavors at once; there's no need to tell them
+-- apart any further than this.
+--
+-- Retail's C_QuestLog has 90 members; Classic has 11 - quest-log traversal,
+-- distance, and waypoint functions are simply absent there, replaced by older
+-- plain-global functions with different shapes (index-based instead of
+-- questID-based in a couple of spots). C_QuestLog.GetInfo is retail-only in
+-- every form and never present on Classic, so it doubles as a one-time flavor
+-- check.
+local IS_CLASSIC = C_QuestLog.GetInfo == nil
+
+-- Returns questID, title, isHeader, isHidden for quest-log entry `index`
+-- (1-based), or nil if there's nothing there. isHidden covers entries the
+-- game itself keeps out of the player's visible quest log (e.g. Renown
+-- reward-track notifications) but that still show up in raw traversal -
+-- callers must skip these or things that were never real quests show up
+-- as if they were.
+local function Compat_GetQuestEntry(index)
+	if IS_CLASSIC then
+		-- GetQuestLogTitle returns positionally, not as a table; questID is
+		-- return #8, isHidden is return #16 (verified against live Classic
+		-- source, both flavors).
+		local title, _, _, isHeader, _, _, _, questID, _, _, _, _, _, _, _, isHidden = GetQuestLogTitle(index)
+		if not title then return nil end
+		return questID, title, isHeader, isHidden
+	end
+	local info = C_QuestLog.GetInfo(index)
+	if not info then return nil end
+	return info.questID, info.title, info.isHeader, info.isHidden
+end
+
+local function Compat_GetNumEntries()
+	if IS_CLASSIC then
+		return (GetNumQuestLogEntries())
+	end
+	return C_QuestLog.GetNumQuestLogEntries()
+end
+
+local function Compat_IsComplete(questID)
+	if IS_CLASSIC then
+		return IsQuestComplete(questID) and true or false
+	end
+	local ok, isComplete = pcall(C_QuestLog.IsComplete, questID)
+	return ok and isComplete and true or false
+end
+
+-- Classic has no cross-zone distance/waypoint API at all (GetDistanceSqToQuest,
+-- GetNextWaypoint and friends don't exist there) - the closest equivalent is
+-- C_QuestLog.GetQuestsOnMap(uiMapID), which only reports quests whose turn-in
+-- is ON that specific map. So on Classic, location data is only ever available
+-- for quests in the player's CURRENT zone; anything elsewhere gets no location
+-- data (same bucket retail already uses for off-continent quests). Navigate
+-- still works regardless of zone though, via the SuperTrack-equivalent arrow
+-- (Compat_SetSuperTracked below), which only needs a questID, not coordinates.
+local function Compat_GetQuestMapXY(questID, uiMapID)
+	if not uiMapID then return nil end
+	local pois = C_QuestLog.GetQuestsOnMap(uiMapID)
+	if not pois then return nil end
+	for _, poi in ipairs(pois) do
+		if poi.questID == questID and poi.x and poi.y then
+			return poi.x, poi.y
+		end
+	end
+	return nil
+end
+
+-- Track/watch functions take a questID on retail but a quest-LOG-INDEX on
+-- Classic - GetQuestLogIndexByID converts between the two.
+local function Compat_GetQuestWatchType(questID)
+	if IS_CLASSIC then
+		local index = GetQuestLogIndexByID(questID)
+		return index and index > 0 and IsQuestWatched(index)
+	end
+	return C_QuestLog.GetQuestWatchType(questID)
+end
+
+local function Compat_AddQuestWatch(questID)
+	if IS_CLASSIC then
+		local index = GetQuestLogIndexByID(questID)
+		if index and index > 0 then AddQuestWatch(index) end
+		return
+	end
+	C_QuestLog.AddQuestWatch(questID)
+end
+
+local function Compat_RemoveQuestWatch(questID)
+	if IS_CLASSIC then
+		local index = GetQuestLogIndexByID(questID)
+		if index and index > 0 then RemoveQuestWatch(index) end
+		return
+	end
+	C_QuestLog.RemoveQuestWatch(questID)
+end
+
+-- Points WoW's own on-screen tracking arrow at a quest. C_SuperTrack doesn't
+-- exist on Classic at all; the equivalent there is a couple of plain globals.
+local function Compat_SetSuperTracked(questID)
+	if IS_CLASSIC then
+		if SetSuperTrackedQuestID then SetSuperTrackedQuestID(questID) end
+		return
+	end
+	if C_SuperTrack and C_SuperTrack.SetSuperTrackedQuestID then
+		C_SuperTrack.SetSuperTrackedQuestID(questID)
+	end
+end
+
+-------------------------------------------------
 -- Fonts
 -------------------------------------------------
 -- Stock font files that ship with every WoW client (no extra files
@@ -66,15 +177,15 @@ local defaults = {
 	height = 420,
 	minimapAngle = 200,
 	minimapHidden = false,
-	autoShow = false,
+	autoShow = true,
 	autoNavigateNearest = false,
-	currentZoneOnly = true,
+	currentZoneOnly = false,
 	fontKey = "CUSTOM",
 	fontSize = 13,
 	outlineKey = "OUTLINE",
 	fontShadow = true,
 	useClassColor = false,
-	windowScale = 1.0,
+	windowScale = 0.7,
 	autoTurnIn = false,
 	autoAccept = false,
 	readySound = false,
@@ -160,24 +271,34 @@ end
 -- Small UI helpers
 -------------------------------------------------
 
--- A minimal, chrome-free text button (no grey button texture), matching
--- the clickable text links used throughout Blizzard's tracker/UI.
+-- A real visible button (background + gold border), not just plain clickable
+-- text -- used everywhere in the addon (Track/Navigate on each row, the
+-- footer actions, the zone toggle), so this one change makes every button in
+-- the addon easier to spot at a glance.
 local function CreateTextButton(parent)
-	local btn = CreateFrame("Button", nil, parent)
+	local btn = CreateFrame("Button", nil, parent, "BackdropTemplate")
+	btn:SetBackdrop({
+		bgFile = "Interface\\Buttons\\WHITE8x8",
+		edgeFile = "Interface\\Buttons\\WHITE8x8",
+		edgeSize = 1,
+	})
+	btn:SetBackdropColor(1, 1, 1, 0.08)
+	btn:SetBackdropBorderColor(1, 0.82, 0, 0.55)
+	btn:SetHeight(20)
+
 	local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	fs:SetPoint("CENTER")
 	btn.fs = fs
-	btn:SetHeight(16)
 
 	local hl = btn:CreateTexture(nil, "HIGHLIGHT")
-	hl:SetColorTexture(1, 1, 1, 0.12)
+	hl:SetColorTexture(1, 1, 1, 0.15)
 	hl:SetAllPoints()
 
 	function btn:SetLabel(text, color)
 		color = color or WHITE
 		fs:SetText(text)
 		fs:SetTextColor(color[1], color[2], color[3])
-		btn:SetWidth(math.max(fs:GetStringWidth() + 12, 20))
+		btn:SetWidth(math.max(fs:GetStringWidth() + 20, 28))
 	end
 
 	return btn
@@ -195,6 +316,13 @@ end
 -------------------------------------------------
 
 local function FormatDistance(info)
+	if IS_CLASSIC then
+		-- No real yard distance available on Classic (see Compat_GetQuestMapXY) -
+		-- "nearby" is honest about what we actually know: same zone, sorted
+		-- nearest-first among same-zone quests, but not a precise number.
+		if info.ttt_classicSameZone then return "nearby" end
+		return ""
+	end
 	if info.ttt_distSq and info.ttt_onContinent then
 		local yards = math.sqrt(info.ttt_distSq)
 		return string.format("%.0f yd away", yards)
@@ -255,6 +383,16 @@ end
 -- waypoint (its turn-in location once it's ready), for building a
 -- TomTom-style waypoint command.
 local function GetQuestWaypointCoords(questID)
+	if IS_CLASSIC then
+		-- Only works for quests in the player's current zone - see
+		-- Compat_GetQuestMapXY. A quest elsewhere returns nil here and
+		-- NavigateToQuest below falls back to the SuperTrack-equivalent arrow,
+		-- which needs no coordinates and works regardless of zone.
+		local uiMapID = C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
+		local x, y = Compat_GetQuestMapXY(questID, uiMapID)
+		if not uiMapID or not x then return nil end
+		return uiMapID, x, y
+	end
 	local ok, uiMapID = pcall(C_QuestLog.GetNextWaypoint, questID)
 	if not ok or not uiMapID then return nil end
 	local ok2, x, y = pcall(C_QuestLog.GetNextWaypointForMap, questID, uiMapID)
@@ -262,29 +400,18 @@ local function GetQuestWaypointCoords(questID)
 	return uiMapID, x, y
 end
 
--- If TomTom is installed, drops a waypoint through its public AddWaypoint API
--- (the same call Xal's Xpedited Routes uses) so TomTom's own arrow/waypoint UI
+-- If TomTom is installed, this fires its actual /way chat command
+-- (via the same handler the game calls when you type it yourself --
+-- no direct use of TomTom's Lua API) so TomTom's own arrow/waypoint UI
 -- takes over, since that's generally the better navigation experience.
---
--- This used to fire SlashCmdList["TOMTOM"] as if typing a slash command, but
--- "TOMTOM" is the handler for /tomtom -- which just OPENS TomTom's options
--- menu. The waypoint command /way is a separate handler ("TOMTOM_WAY"), so the
--- old code popped the menu open on every click and never set a waypoint.
--- Calling the API directly is simpler and sidesteps that entirely.
--- Returns true if a TomTom waypoint was set.
+-- Returns true if a TomTom waypoint was sent.
 local function SendTomTomWaypoint(questID, title)
-	if not (TomTom and TomTom.AddWaypoint) then return false end
+	if not (SlashCmdList and SlashCmdList["TOMTOM_WAY"]) then return false end
 	local uiMapID, x, y = GetQuestWaypointCoords(questID)
 	if not uiMapID then return false end
-	local ok = pcall(function()
-		TomTom:AddWaypoint(uiMapID, x, y, {
-			title = title or "Quest",
-			persistent = false,
-			minimap = true,
-			world = true,
-		})
-	end)
-	return ok
+	local command = string.format("#%d %.1f %.1f %s", uiMapID, x * 100, y * 100, title or "Quest")
+	SlashCmdList["TOMTOM_WAY"](command)
+	return true
 end
 
 -- Points the player toward the given quest's turn-in. Prefers TomTom's
@@ -296,8 +423,8 @@ local function NavigateToQuest(questID, title)
 	if not questID then return end
 
 	local usedTomTom = SendTomTomWaypoint(questID, title)
-	if not usedTomTom and C_SuperTrack and C_SuperTrack.SetSuperTrackedQuestID then
-		C_SuperTrack.SetSuperTrackedQuestID(questID)
+	if not usedTomTom then
+		Compat_SetSuperTracked(questID)
 	end
 	currentNavQuestID = questID
 
@@ -314,29 +441,51 @@ end
 
 -- Returns a sorted list (nearest first) of quest-info tables for every
 -- quest in the quest log that is currently complete (ready to hand in).
--- Uses C_QuestLog.IsComplete(questID), the reliable documented way to
--- check turn-in status -- the isComplete field on GetInfo() is not
--- always populated correctly.
+-- Uses Compat_IsComplete(questID) (C_QuestLog.IsComplete on retail, the
+-- reliable documented way to check turn-in status there -- the isComplete
+-- field on GetInfo() is not always populated correctly).
 local function GetTurnInQuests()
 	local quests = {}
-	local numEntries = C_QuestLog.GetNumQuestLogEntries()
+	local numEntries = Compat_GetNumEntries()
 	local zoneOnly = XalsQuestCompassDB.currentZoneOnly
-	local playerMapID = zoneOnly and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
+	local playerMapID = C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
 
 	for i = 1, numEntries do
-		local info = C_QuestLog.GetInfo(i)
-		if info and not info.isHeader and info.questID and info.questID > 0 then
-			local ok, isComplete = pcall(C_QuestLog.IsComplete, info.questID)
-			if ok and isComplete then
-				local dOk, distSq, onContinent = pcall(C_QuestLog.GetDistanceSqToQuest, info.questID)
+		local questID, title, isHeader, isHidden = Compat_GetQuestEntry(i)
+		if questID and not isHeader and not isHidden and questID > 0 and Compat_IsComplete(questID) then
+			local info = { questID = questID, title = title }
+
+			if IS_CLASSIC then
+				-- Only quests in the player's current zone get location data at
+				-- all on Classic (see Compat_GetQuestMapXY) - everything else
+				-- falls into the same "no data" bucket as retail's off-continent
+				-- case, both here and in the sort below.
+				local x, y = playerMapID and Compat_GetQuestMapXY(questID, playerMapID)
+				if x and y then
+					local pos = C_Map.GetPlayerMapPosition(playerMapID, "player")
+					local px, py = pos and pos:GetXY()
+					if px and py then
+						local dx, dy = x - px, y - py
+						info.ttt_classicSameZone = true
+						info.ttt_classicSortDist = dx * dx + dy * dy
+					end
+				end
+
+				local include = true
+				if zoneOnly and playerMapID and questID ~= currentNavQuestID and not info.ttt_classicSameZone then
+					include = false
+				end
+				if include then table.insert(quests, info) end
+			else
+				local dOk, distSq, onContinent = pcall(C_QuestLog.GetDistanceSqToQuest, questID)
 				if dOk then
 					info.ttt_distSq = distSq
 					info.ttt_onContinent = onContinent
 				end
 
 				local include = true
-				if zoneOnly and playerMapID and info.questID ~= currentNavQuestID then
-					local wOk, waypointMapID = pcall(C_QuestLog.GetNextWaypoint, info.questID)
+				if zoneOnly and playerMapID and questID ~= currentNavQuestID then
+					local wOk, waypointMapID = pcall(C_QuestLog.GetNextWaypoint, questID)
 					-- If we can't determine a location, show it anyway rather than
 					-- risk hiding a quest that's actually ready right here.
 					if wOk and waypointMapID and waypointMapID ~= playerMapID then
@@ -344,14 +493,24 @@ local function GetTurnInQuests()
 					end
 				end
 
-				if include then
-					table.insert(quests, info)
-				end
+				if include then table.insert(quests, info) end
 			end
 		end
 	end
 
 	table.sort(quests, function(a, b)
+		if IS_CLASSIC then
+			local aHas = a.ttt_classicSameZone and a.ttt_classicSortDist
+			local bHas = b.ttt_classicSameZone and b.ttt_classicSortDist
+			if aHas and bHas then
+				return a.ttt_classicSortDist < b.ttt_classicSortDist
+			elseif aHas and not bHas then
+				return true
+			elseif bHas and not aHas then
+				return false
+			end
+			return (a.title or "") < (b.title or "")
+		end
 		local aHas = a.ttt_distSq and a.ttt_onContinent
 		local bHas = b.ttt_distSq and b.ttt_onContinent
 		if aHas and bHas then
@@ -374,14 +533,11 @@ end
 -- either travel there or switch the window to "All Zones".
 local function CountAllReadyQuests()
 	local count = 0
-	local numEntries = C_QuestLog.GetNumQuestLogEntries()
+	local numEntries = Compat_GetNumEntries()
 	for i = 1, numEntries do
-		local info = C_QuestLog.GetInfo(i)
-		if info and not info.isHeader and info.questID and info.questID > 0 then
-			local ok, isComplete = pcall(C_QuestLog.IsComplete, info.questID)
-			if ok and isComplete then
-				count = count + 1
-			end
+		local questID, _, isHeader, isHidden = Compat_GetQuestEntry(i)
+		if questID and not isHeader and not isHidden and questID > 0 and Compat_IsComplete(questID) then
+			count = count + 1
 		end
 	end
 	return count
@@ -457,11 +613,11 @@ local function CreateRow(parent, index)
 	trackBtn:SetScript("OnClick", function(self)
 		local parentRow = self:GetParent()
 		if not parentRow.questID then return end
-		local watchType = C_QuestLog.GetQuestWatchType(parentRow.questID)
+		local watchType = Compat_GetQuestWatchType(parentRow.questID)
 		if watchType then
-			C_QuestLog.RemoveQuestWatch(parentRow.questID)
+			Compat_RemoveQuestWatch(parentRow.questID)
 		else
-			C_QuestLog.AddQuestWatch(parentRow.questID)
+			Compat_AddQuestWatch(parentRow.questID)
 		end
 	end)
 	row.trackBtn = trackBtn
@@ -497,7 +653,7 @@ local function UpdateRow(row, info)
 	row.title:SetText(info.title or "Unknown Quest")
 	row.distText:SetText(FormatDistance(info))
 
-	local watchType = C_QuestLog.GetQuestWatchType(info.questID)
+	local watchType = Compat_GetQuestWatchType(info.questID)
 	if watchType then
 		row.trackBtn:SetLabel("Tracking", GREEN)
 	else
@@ -616,13 +772,26 @@ local function CreateOptionsPanel()
 		end
 	end)
 
-	local subtitle = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
-	subtitle:SetPoint("RIGHT", openBtn, "LEFT", -10, 0)
+	-- Everything below the title/button header scrolls, so settings can never
+	-- get cut off no matter how tall this panel grows -- Blizzard's Settings
+	-- canvas does NOT auto-scroll custom content on its own, which is exactly
+	-- why the Window Scale slider was invisible/unreachable once this panel
+	-- grew past the visible area (fixed 2026-08-07).
+	local scrollFrame = CreateFrame("ScrollFrame", "XalsQuestCompassOptionsScrollFrame", panel, "UIPanelScrollFrameTemplate")
+	scrollFrame:SetPoint("TOPLEFT", title, "BOTTOMLEFT", -2, -12)
+	scrollFrame:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -30, 4)
+
+	local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+	scrollChild:SetSize(340, 700) -- generously tall; scrolling handles the rest, so this never needs to be exact
+	scrollFrame:SetScrollChild(scrollChild)
+
+	local subtitle = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	subtitle:SetPoint("TOPLEFT", 2, 0)
+	subtitle:SetPoint("RIGHT", -20, 0)
 	subtitle:SetJustifyH("LEFT")
 	subtitle:SetText("Toggle the quest window with /xqc or the minimap button. Click Navigate on any quest for an on-screen arrow.")
 
-	local autoShowCB = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+	local autoShowCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
 	autoShowCB:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", -2, -24)
 	autoShowCB.Text:SetText("Automatically open the window when a quest becomes ready to turn in")
 	autoShowCB:SetChecked(XalsQuestCompassDB.autoShow)
@@ -631,7 +800,7 @@ local function CreateOptionsPanel()
 	end)
 	panel.autoShowCB = autoShowCB
 
-	local autoNavCB = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+	local autoNavCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
 	autoNavCB:SetPoint("TOPLEFT", autoShowCB, "BOTTOMLEFT", 0, -8)
 	autoNavCB.Text:SetText("Automatically point the arrow at the nearest turn-in when none is selected")
 	autoNavCB:SetChecked(XalsQuestCompassDB.autoNavigateNearest)
@@ -640,7 +809,7 @@ local function CreateOptionsPanel()
 	end)
 	panel.autoNavCB = autoNavCB
 
-	local zoneOnlyCB = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+	local zoneOnlyCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
 	zoneOnlyCB:SetPoint("TOPLEFT", autoNavCB, "BOTTOMLEFT", 0, -8)
 	zoneOnlyCB.Text:SetText("Only show quests ready to turn in within my current zone")
 	zoneOnlyCB:SetChecked(XalsQuestCompassDB.currentZoneOnly)
@@ -651,7 +820,7 @@ local function CreateOptionsPanel()
 	end)
 	panel.zoneOnlyCB = zoneOnlyCB
 
-	local minimapCB = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+	local minimapCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
 	minimapCB:SetPoint("TOPLEFT", zoneOnlyCB, "BOTTOMLEFT", 0, -8)
 	minimapCB.Text:SetText("Show minimap button")
 	minimapCB:SetChecked(not XalsQuestCompassDB.minimapHidden)
@@ -664,11 +833,11 @@ local function CreateOptionsPanel()
 	panel.minimapCB = minimapCB
 
 	-- Automation section
-	local automationTitle = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	local automationTitle = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 	automationTitle:SetPoint("TOPLEFT", minimapCB, "BOTTOMLEFT", 2, -20)
 	automationTitle:SetText("Automation")
 
-	local autoTurnInCB = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+	local autoTurnInCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
 	autoTurnInCB:SetPoint("TOPLEFT", automationTitle, "BOTTOMLEFT", -2, -12)
 	autoTurnInCB.Text:SetText("Automatically turn in quests with no reward choice to make")
 	autoTurnInCB:SetChecked(XalsQuestCompassDB.autoTurnIn)
@@ -677,7 +846,7 @@ local function CreateOptionsPanel()
 	end)
 	panel.autoTurnInCB = autoTurnInCB
 
-	local autoAcceptCB = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+	local autoAcceptCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
 	autoAcceptCB:SetPoint("TOPLEFT", autoTurnInCB, "BOTTOMLEFT", 0, -8)
 	autoAcceptCB.Text:SetText("Automatically accept new quests offered by NPCs")
 	autoAcceptCB:SetChecked(XalsQuestCompassDB.autoAccept)
@@ -686,13 +855,13 @@ local function CreateOptionsPanel()
 	end)
 	panel.autoAcceptCB = autoAcceptCB
 
-	local automationNote = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	local automationNote = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 	automationNote:SetPoint("TOPLEFT", autoAcceptCB, "BOTTOMLEFT", 24, -4)
 	automationNote:SetPoint("RIGHT", -16, 0)
 	automationNote:SetJustifyH("LEFT")
 	automationNote:SetText("Skips quests with more than one reward to choose from, quests that cost money to turn in, and a few quest types known to behave oddly (escort, item-start, PvP-flagged) - those still open normally so you can handle them yourself. Hold Shift to pause automation at any time.")
 
-	local readySoundCB = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+	local readySoundCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
 	readySoundCB:SetPoint("TOPLEFT", automationNote, "BOTTOMLEFT", -24, -10)
 	readySoundCB.Text:SetText("Play a sound when a quest becomes ready to turn in")
 	readySoundCB:SetChecked(XalsQuestCompassDB.readySound)
@@ -702,15 +871,15 @@ local function CreateOptionsPanel()
 	panel.readySoundCB = readySoundCB
 
 	-- Appearance section
-	local appearanceTitle = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	local appearanceTitle = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 	appearanceTitle:SetPoint("TOPLEFT", readySoundCB, "BOTTOMLEFT", 2, -20)
 	appearanceTitle:SetText("Appearance")
 
-	local fontLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	local fontLabel = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	fontLabel:SetPoint("TOPLEFT", appearanceTitle, "BOTTOMLEFT", 0, -12)
 	fontLabel:SetText("Font")
 
-	local fontDropdown = CreateFrame("Frame", "XalsQuestCompassFontDropdown", panel, "UIDropDownMenuTemplate")
+	local fontDropdown = CreateFrame("Frame", "XalsQuestCompassFontDropdown", scrollChild, "UIDropDownMenuTemplate")
 	fontDropdown:SetPoint("TOPLEFT", fontLabel, "BOTTOMLEFT", -16, -4)
 	UIDropDownMenu_SetWidth(fontDropdown, 190)
 	local function RefreshFontDropdownText()
@@ -732,11 +901,11 @@ local function CreateOptionsPanel()
 	panel.fontDropdown = fontDropdown
 	panel.RefreshFontDropdownText = RefreshFontDropdownText
 
-	local outlineLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	local outlineLabel = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	outlineLabel:SetPoint("TOPLEFT", fontDropdown, "BOTTOMLEFT", 16, -4)
 	outlineLabel:SetText("Font Outline")
 
-	local outlineDropdown = CreateFrame("Frame", "XalsQuestCompassOutlineDropdown", panel, "UIDropDownMenuTemplate")
+	local outlineDropdown = CreateFrame("Frame", "XalsQuestCompassOutlineDropdown", scrollChild, "UIDropDownMenuTemplate")
 	outlineDropdown:SetPoint("TOPLEFT", outlineLabel, "BOTTOMLEFT", -16, -4)
 	UIDropDownMenu_SetWidth(outlineDropdown, 190)
 	local function RefreshOutlineDropdownText()
@@ -758,7 +927,7 @@ local function CreateOptionsPanel()
 	panel.outlineDropdown = outlineDropdown
 	panel.RefreshOutlineDropdownText = RefreshOutlineDropdownText
 
-	local sizeSlider = CreateFrame("Slider", "XalsQuestCompassFontSizeSlider", panel, "OptionsSliderTemplate")
+	local sizeSlider = CreateFrame("Slider", "XalsQuestCompassFontSizeSlider", scrollChild, "OptionsSliderTemplate")
 	sizeSlider:SetPoint("TOPLEFT", outlineDropdown, "BOTTOMLEFT", 16, -20)
 	sizeSlider:SetMinMaxValues(10, 22)
 	sizeSlider:SetValueStep(1)
@@ -775,7 +944,7 @@ local function CreateOptionsPanel()
 	end)
 	panel.sizeSlider = sizeSlider
 
-	local shadowCB = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+	local shadowCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
 	shadowCB:SetPoint("TOPLEFT", sizeSlider, "BOTTOMLEFT", -16, -28)
 	shadowCB.Text:SetText("Text shadow")
 	shadowCB:SetChecked(XalsQuestCompassDB.fontShadow)
@@ -785,7 +954,7 @@ local function CreateOptionsPanel()
 	end)
 	panel.shadowCB = shadowCB
 
-	local classColorCB = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+	local classColorCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
 	classColorCB:SetPoint("TOPLEFT", shadowCB, "BOTTOMLEFT", 0, -8)
 	classColorCB.Text:SetText("Use my class color for quest titles")
 	classColorCB:SetChecked(XalsQuestCompassDB.useClassColor)
@@ -795,7 +964,7 @@ local function CreateOptionsPanel()
 	end)
 	panel.classColorCB = classColorCB
 
-	local scaleSlider = CreateFrame("Slider", "XalsQuestCompassScaleSlider", panel, "OptionsSliderTemplate")
+	local scaleSlider = CreateFrame("Slider", "XalsQuestCompassScaleSlider", scrollChild, "OptionsSliderTemplate")
 	scaleSlider:SetPoint("TOPLEFT", classColorCB, "BOTTOMLEFT", 16, -24)
 	scaleSlider:SetMinMaxValues(0.7, 1.5)
 	scaleSlider:SetValueStep(0.05)
@@ -1031,7 +1200,7 @@ local function CreateMainFrame()
 	trackAllBtn:SetLabel("Track All", LIGHT_BLUE)
 	trackAllBtn:SetScript("OnClick", function()
 		for _, info in ipairs(GetTurnInQuests()) do
-			C_QuestLog.AddQuestWatch(info.questID)
+			Compat_AddQuestWatch(info.questID)
 		end
 		RefreshList()
 	end)
@@ -1041,7 +1210,7 @@ local function CreateMainFrame()
 	untrackAllBtn:SetLabel("Untrack All", GREY)
 	untrackAllBtn:SetScript("OnClick", function()
 		for _, info in ipairs(GetTurnInQuests()) do
-			C_QuestLog.RemoveQuestWatch(info.questID)
+			Compat_RemoveQuestWatch(info.questID)
 		end
 		RefreshList()
 	end)
@@ -1275,7 +1444,17 @@ eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("QUEST_LOG_UPDATE")
 eventFrame:RegisterEvent("QUEST_WATCH_LIST_CHANGED")
 eventFrame:RegisterEvent("UNIT_QUEST_LOG_CHANGED")
-eventFrame:RegisterEvent("SUPER_TRACKING_CHANGED")
+-- SUPER_TRACKING_CHANGED belongs to the retail-only C_SuperTrack system and
+-- doesn't exist on Classic at all - registering it there throws "Attempt to
+-- register unknown event" immediately, which stops this ENTIRE file from
+-- ever finishing (nothing after this point would ever run, including the
+-- ADDON_LOADED handler - this was a total, silent addon failure on Classic
+-- until fixed). Classic has its own equivalently-named event instead.
+if IS_CLASSIC then
+	eventFrame:RegisterEvent("SUPER_TRACKED_QUEST_CHANGED")
+else
+	eventFrame:RegisterEvent("SUPER_TRACKING_CHANGED")
+end
 eventFrame:RegisterEvent("ZONE_CHANGED")
 eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
 eventFrame:RegisterEvent("ZONE_CHANGED_INDOORS")
@@ -1289,11 +1468,16 @@ eventFrame:RegisterEvent("QUEST_COMPLETE")
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
 	if event == "ADDON_LOADED" then
 		if arg1 == ADDON_NAME then
-			InitDB()
-			ApplyFontSettings()
-			CreateMainFrame()
-			CreateMinimapButton()
-			CreateOptionsPanel()
+			-- Each step runs even if an earlier one fails, so one broken
+			-- piece can never silently stop the rest (or the login message)
+			-- from happening.
+			local steps = { InitDB, ApplyFontSettings, CreateMainFrame, CreateMinimapButton, CreateOptionsPanel }
+			for _, step in ipairs(steps) do
+				local ok, err = pcall(step)
+				if not ok then
+					print("|cffff4444Xal's Quest Compass:|r a startup step failed - |cffffff00" .. tostring(err) .. "|r")
+				end
+			end
 			print("|cff33ff99Xal's Quest Compass|r loaded. Type |cffffff00/xqc|r to toggle the window, or click the minimap button.")
 			self:UnregisterEvent("ADDON_LOADED")
 		end
