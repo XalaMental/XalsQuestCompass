@@ -1,5 +1,15 @@
 # Xal's Quest Compass - Changelog
 
+## Release 1.2.0 - August 8, 2026
+
+---
+
+Route All: one click plans and walks you through every quest you have ready to turn in.
+
+### 🆕 New
+- **Route All** - computes an efficient multi-stop route through every quest ready to turn in, across every zone, and walks you through it. A live "Stop X/Y" readout with Skip and Cancel replaces the button while a route is active, and it auto-advances as you turn quests in. If an NPC has more than one of your ready quests, one visit clears all of them.
+- On Retail, Route All covers every zone and continent. On Classic, it routes what's locatable in your current zone right now - click it again after traveling to pick up more.
+
 ## Release 1.1.1 - August 7, 2026
 
 ---
