@@ -211,6 +211,7 @@ local ROW_WIDTH = 328 -- fallback used before the frame exists
 local lastReadyCount = 0
 local lastReadyCountAll = 0
 local currentNavQuestID = nil -- which quest we're currently pointing the player toward
+local UpdateRouteFooter -- forward-declared; assigned in the Route planning section, called from RefreshList
 
 -- Row width tracks the actual visible scroll area, so resizing the
 -- window never clips row content again.
@@ -444,10 +445,10 @@ end
 -- Uses Compat_IsComplete(questID) (C_QuestLog.IsComplete on retail, the
 -- reliable documented way to check turn-in status there -- the isComplete
 -- field on GetInfo() is not always populated correctly).
-local function GetTurnInQuests()
+local function GetTurnInQuests(forceAllZones)
 	local quests = {}
 	local numEntries = Compat_GetNumEntries()
-	local zoneOnly = XalsQuestCompassDB.currentZoneOnly
+	local zoneOnly = not forceAllZones and XalsQuestCompassDB.currentZoneOnly
 	local playerMapID = C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
 
 	for i = 1, numEntries do
@@ -687,6 +688,8 @@ local function RefreshList()
 	-- mid-build (e.g. a size-recalculation triggered by SetBackdrop).
 	if not QTT or not QTT.scrollChild then return end
 
+	if UpdateRouteFooter then UpdateRouteFooter() end
+
 	local quests = GetTurnInQuests()
 
 	-- Auto-show if a new quest became ready anywhere, regardless of the
@@ -746,6 +749,372 @@ end
 -- just a width update, so this just re-runs the layout).
 local function OnWindowResized()
 	RefreshList()
+end
+
+-------------------------------------------------
+-- Route planning ("Route All")
+-------------------------------------------------
+-- Computes an ordered, multi-stop route through every ready-to-turn-in quest
+-- (across all zones, ignoring the "This Zone Only" filter - that's the whole
+-- point of this feature) and walks the player through it stop by stop.
+--
+-- Quests are converted to "world" points via C_Map.GetWorldPosFromMapPos,
+-- which returns a per-continent yard-space position and is present and
+-- unrestricted on Retail, MoP Classic, and Classic Era alike - so this
+-- doesn't need HereBeDragons or any other optional library the way Xal's
+-- Xpedited Routes' gathering routes do (that addon's routes are actually
+-- single-zone only; HereBeDragons there is just a more accurate same-zone
+-- distance formula, not cross-zone stitching). On Classic,
+-- GetQuestWaypointCoords only has coordinates for quests in the player's
+-- CURRENT zone (see its comment above), so Route All there covers what's
+-- locatable right now; clicking it again after traveling picks up newly-
+-- locatable quests. Retail covers every quest regardless of zone or
+-- continent in one pass.
+
+local STOP_CLUSTER_YARDS = 20 -- quests within this distance of each other are treated as one stop
+local CROSS_CONTINENT_DISTANCE = 1e9 -- world positions from different continents aren't directly comparable; this just keeps greedy ordering from jumping continents until it has to
+local MAX_TWO_OPT_STOPS = 60
+local MAX_TWO_OPT_PASSES = 8
+
+local activeRoute = nil -- { stops = { {continentID, wx, wy, quests = {{questID,title},...}}, ... }, cursor = 1 }
+
+-- Converts a quest's normalized map position into a comparable world-space
+-- point (continentID + yards), pcall-guarded since GetWorldPosFromMapPos is
+-- documented as able to return nothing for a handful of edge-case zones.
+local function GetWorldPoint(uiMapID, x, y)
+	if not uiMapID or not x or not y then return nil end
+	local ok, continentID, worldPos = pcall(C_Map.GetWorldPosFromMapPos, uiMapID, CreateVector2D(x, y))
+	if not ok or not continentID or not worldPos then return nil end
+	local wx, wy = worldPos:GetXY()
+	if not wx then return nil end
+	return continentID, wx, wy
+end
+
+local function GetPlayerWorldPoint()
+	local uiMapID = C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
+	if not uiMapID then return nil end
+	local pos = C_Map.GetPlayerMapPosition(uiMapID, "player")
+	if not pos then return nil end
+	local px, py = pos:GetXY()
+	if not px then return nil end
+	return GetWorldPoint(uiMapID, px, py)
+end
+
+local function WorldDistance(a, b)
+	if not a or not b or a.continentID ~= b.continentID then return CROSS_CONTINENT_DISTANCE end
+	local dx, dy = a.wx - b.wx, a.wy - b.wy
+	return math.sqrt(dx * dx + dy * dy)
+end
+
+-- Same greedy-nearest-then-2-opt shape already proven in Xal's Xpedited
+-- Routes' PathPlanner.lua, adapted to work on world-space stops instead of
+-- single-zone node coordinates.
+local function BuildGreedyOrder(startPoint, stops)
+	local pool = {}
+	for i, s in ipairs(stops) do pool[i] = s end
+	local order = {}
+	local at = startPoint
+	while #pool > 0 do
+		local nearestSlot, nearestDist = 1, math.huge
+		for slot, candidate in ipairs(pool) do
+			local d = WorldDistance(at, candidate)
+			if d < nearestDist then
+				nearestDist, nearestSlot = d, slot
+			end
+		end
+		local chosen = table.remove(pool, nearestSlot)
+		table.insert(order, chosen)
+		at = chosen
+	end
+	return order
+end
+
+local function ImproveWithTwoOpt(startPoint, order)
+	local n = #order
+	if n < 3 or n > MAX_TWO_OPT_STOPS then return order end
+
+	local function pointAt(index)
+		if index == 0 then return startPoint end
+		return order[index]
+	end
+
+	for pass = 1, MAX_TWO_OPT_PASSES do
+		local changed = false
+		for i = 1, n - 1 do
+			local prev = pointAt(i - 1)
+			for j = i + 1, n do
+				local nextIndex = j + 1
+				if nextIndex <= n then
+					local a, b, after = pointAt(i), pointAt(j), pointAt(nextIndex)
+					local currentCost = WorldDistance(prev, a) + WorldDistance(b, after)
+					local swappedCost = WorldDistance(prev, b) + WorldDistance(a, after)
+					if swappedCost < currentCost - 0.01 then
+						local lo, hi = i, j
+						while lo < hi do
+							order[lo], order[hi] = order[hi], order[lo]
+							lo, hi = lo + 1, hi - 1
+						end
+						changed = true
+					end
+				end
+			end
+		end
+		if not changed then break end
+	end
+	return order
+end
+
+-- Gathers every ready-to-turn-in quest with a resolvable world position, and
+-- separates out the ones that don't have one (e.g. no map POI at all) so
+-- they can be surfaced separately rather than silently dropped.
+local function BuildRouteStops()
+	local located, unlocated = {}, {}
+
+	for _, info in ipairs(GetTurnInQuests(true)) do
+		local uiMapID, x, y = GetQuestWaypointCoords(info.questID)
+		local continentID, wx, wy = uiMapID and GetWorldPoint(uiMapID, x, y)
+		if continentID and wx and wy then
+			table.insert(located, { questID = info.questID, title = info.title, continentID = continentID, wx = wx, wy = wy })
+		else
+			table.insert(unlocated, info)
+		end
+	end
+
+	-- Cluster quests that are close together (same NPC, or a hub of several
+	-- quest-givers a few steps apart) into a single stop, so the route
+	-- doesn't send the player back and forth between adjacent quest-givers.
+	local stops = {}
+	for _, q in ipairs(located) do
+		local placed = false
+		for _, stop in ipairs(stops) do
+			if stop.continentID == q.continentID then
+				local dx, dy = q.wx - stop.wx, q.wy - stop.wy
+				if math.sqrt(dx * dx + dy * dy) <= STOP_CLUSTER_YARDS then
+					table.insert(stop.quests, { questID = q.questID, title = q.title })
+					placed = true
+					break
+				end
+			end
+		end
+		if not placed then
+			table.insert(stops, {
+				continentID = q.continentID, wx = q.wx, wy = q.wy,
+				quests = { { questID = q.questID, title = q.title } },
+			})
+		end
+	end
+
+	return stops, unlocated
+end
+
+local function CurrentStop()
+	if not activeRoute then return nil end
+	return activeRoute.stops[activeRoute.cursor]
+end
+
+local function QuestIDInCurrentStop(questID)
+	local stop = CurrentStop()
+	if not stop then return false end
+	for _, q in ipairs(stop.quests) do
+		if q.questID == questID then return true end
+	end
+	return false
+end
+
+function UpdateRouteFooter()
+	if not QTT or not QTT.routeAllBtn then return end
+	if activeRoute then
+		local stop = CurrentStop()
+		local n = stop and #stop.quests or 0
+		QTT.routeStatusText:SetText(string.format("Stop %d/%d (%d quest%s)", activeRoute.cursor, #activeRoute.stops, n, n == 1 and "" or "s"))
+		QTT.routeStatusText:Show()
+		QTT.routeAllBtn:Hide()
+		QTT.routeSkipBtn:Show()
+		QTT.routeCancelBtn:Show()
+	else
+		QTT.routeStatusText:Hide()
+		QTT.routeSkipBtn:Hide()
+		QTT.routeCancelBtn:Hide()
+		QTT.routeAllBtn:Show()
+	end
+end
+
+local function NavigateToCurrentStop()
+	local stop = CurrentStop()
+	if not stop then return end
+	local title = stop.quests[1].title
+	if #stop.quests > 1 then
+		title = string.format("%s (+%d more)", title, #stop.quests - 1)
+	end
+	NavigateToQuest(stop.quests[1].questID, title)
+end
+
+local function StopRoute(silent)
+	if not activeRoute then return end
+	activeRoute = nil
+	if not silent then
+		print("|cff33ff99Xal's Quest Compass:|r Route cancelled.")
+	end
+	UpdateRouteFooter()
+end
+
+local function AdvanceRoute()
+	if not activeRoute then return end
+	activeRoute.cursor = activeRoute.cursor + 1
+	if activeRoute.cursor > #activeRoute.stops then
+		print("|cff33ff99Xal's Quest Compass:|r Route complete!")
+		StopRoute(true)
+		return
+	end
+	print(string.format("|cff33ff99Xal's Quest Compass:|r Next stop: |cffffff00%d/%d|r", activeRoute.cursor, #activeRoute.stops))
+	NavigateToCurrentStop()
+	UpdateRouteFooter()
+end
+
+local function SkipStop()
+	if not activeRoute then return end
+	print("|cff33ff99Xal's Quest Compass:|r Stop skipped.")
+	AdvanceRoute()
+end
+
+-- Drops a quest from the route wherever it currently sits (normally the
+-- current stop) without treating it as a success - used both for a
+-- confirmed turn-in (see HandleQuestTurnedIn) and for a quest just
+-- disappearing some other way (abandoned, expired, reset). If that empties
+-- the current stop, the route advances on its own.
+local function RemoveQuestFromRoute(questID)
+	if not activeRoute or not questID then return end
+	local stop = CurrentStop()
+	if not stop then return end
+	local removed = false
+	for i = #stop.quests, 1, -1 do
+		if stop.quests[i].questID == questID then
+			table.remove(stop.quests, i)
+			removed = true
+		end
+	end
+	if removed then
+		if #stop.quests == 0 then
+			AdvanceRoute()
+		else
+			UpdateRouteFooter()
+		end
+	end
+end
+
+-- QUEST_TURNED_IN fires synchronously, before the quest log itself has been
+-- rebuilt (it's flagged SynchronousEvent in Blizzard's own API docs), so the
+-- actual route-state change is deferred one frame rather than trusting
+-- anything about quest-log state inside this handler.
+local function HandleQuestTurnedIn(questID)
+	if not activeRoute or not questID then return end
+	if not QuestIDInCurrentStop(questID) then return end
+	C_Timer.After(0, function()
+		RemoveQuestFromRoute(questID)
+	end)
+end
+
+-- Self-heal backstop: if a quest silently left the log some other way (no
+-- QUEST_TURNED_IN, no QUEST_REMOVED caught for some reason), this notices on
+-- the next general quest-log update and drops it, so the route can never get
+-- permanently stuck waiting on a quest that's already gone.
+local function ValidateRouteAgainstLog()
+	if not activeRoute then return end
+	local stop = CurrentStop()
+	if not stop then return end
+
+	local stillInLog = {}
+	local numEntries = Compat_GetNumEntries()
+	for i = 1, numEntries do
+		local questID = Compat_GetQuestEntry(i)
+		if questID then stillInLog[questID] = true end
+	end
+
+	local anyGone = false
+	for i = #stop.quests, 1, -1 do
+		if not stillInLog[stop.quests[i].questID] then
+			table.remove(stop.quests, i)
+			anyGone = true
+		end
+	end
+	if anyGone then
+		if #stop.quests == 0 then
+			AdvanceRoute()
+		else
+			UpdateRouteFooter()
+		end
+	end
+end
+
+-- When the player interacts with an NPC that turns out to also hold a
+-- LATER stop's quest(s), pull those into the current stop so one visit
+-- resolves everything that NPC can give right now instead of the route
+-- sending the player back a second time. Uses the same GetActiveQuests
+-- call already relied on for auto turn-in above.
+local function MergeGossipQuestsIntoCurrentStop()
+	if not activeRoute then return end
+	if not (C_GossipInfo and C_GossipInfo.GetActiveQuests) then return end
+	local stop = CurrentStop()
+	if not stop then return end
+
+	local ok, list = pcall(C_GossipInfo.GetActiveQuests)
+	if not ok or not list then return end
+
+	local hereIDs = {}
+	for _, q in ipairs(list) do
+		if q.questID then hereIDs[q.questID] = true end
+	end
+	if not next(hereIDs) then return end
+
+	local mergedAny = false
+	for laterIdx = activeRoute.cursor + 1, #activeRoute.stops do
+		local laterStop = activeRoute.stops[laterIdx]
+		for i = #laterStop.quests, 1, -1 do
+			if hereIDs[laterStop.quests[i].questID] then
+				table.insert(stop.quests, laterStop.quests[i])
+				table.remove(laterStop.quests, i)
+				mergedAny = true
+			end
+		end
+	end
+	if mergedAny then
+		for laterIdx = #activeRoute.stops, activeRoute.cursor + 1, -1 do
+			if #activeRoute.stops[laterIdx].quests == 0 then
+				table.remove(activeRoute.stops, laterIdx)
+			end
+		end
+		UpdateRouteFooter()
+	end
+end
+
+local function StartRoute()
+	local stops, unlocated = BuildRouteStops()
+	if #stops == 0 then
+		if #unlocated > 0 then
+			print("|cffff9900Xal's Quest Compass:|r Couldn't find a location for any ready quest right now - use Navigate on individual quests instead.")
+		else
+			print("|cff33ff99Xal's Quest Compass:|r No quests are ready to turn in.")
+		end
+		return
+	end
+
+	local startPoint = GetPlayerWorldPoint()
+	local order = stops
+	if startPoint then
+		order = BuildGreedyOrder(startPoint, stops)
+		order = ImproveWithTwoOpt(startPoint, order)
+	end
+
+	activeRoute = { stops = order, cursor = 1 }
+	NavigateToCurrentStop()
+
+	local msg = string.format("|cff33ff99Xal's Quest Compass:|r Route started - |cff00ff00%d|r stop%s.", #order, #order == 1 and "" or "s")
+	if #unlocated > 0 then
+		msg = msg .. string.format(" (%d quest%s couldn't be routed - use Navigate individually.)", #unlocated, #unlocated == 1 and "" or "s")
+	end
+	print(msg)
+
+	UpdateRouteFooter()
 end
 
 -------------------------------------------------
@@ -1144,7 +1513,7 @@ local function CreateMainFrame()
 	-- Scroll frame + child
 	local scrollFrame = CreateFrame("ScrollFrame", "XalsQuestCompassScrollFrame", QTT, "UIPanelScrollFrameTemplate")
 	scrollFrame:SetPoint("TOPLEFT", 12, -66)
-	scrollFrame:SetPoint("BOTTOMRIGHT", -30, 46)
+	scrollFrame:SetPoint("BOTTOMRIGHT", -30, 66)
 	QTT.scrollFrame = scrollFrame
 
 	-- Resize grip -- always available, drag it directly to resize
@@ -1178,8 +1547,43 @@ local function CreateMainFrame()
 
 	-- Footer divider
 	local footerDivider = CreateDivider(QTT)
-	footerDivider:SetPoint("BOTTOMLEFT", 14, 38)
-	footerDivider:SetPoint("BOTTOMRIGHT", -14, 38)
+	footerDivider:SetPoint("BOTTOMLEFT", 14, 58)
+	footerDivider:SetPoint("BOTTOMRIGHT", -14, 58)
+
+	-- Route All -- computes a multi-stop route through every ready quest and
+	-- starts walking it. While a route is active this row swaps to a
+	-- Stop X/Y readout plus Skip/Cancel instead of showing the button.
+	local routeAllBtn = CreateTextButton(QTT)
+	routeAllBtn:SetPoint("BOTTOM", 0, 38)
+	routeAllBtn:SetLabel("Route All", GOLD)
+	routeAllBtn:SetScript("OnClick", function()
+		StartRoute()
+	end)
+	QTT.routeAllBtn = routeAllBtn
+
+	local routeStatusText = QTT:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	routeStatusText:SetPoint("BOTTOM", 0, 41)
+	routeStatusText:SetTextColor(GREEN[1], GREEN[2], GREEN[3])
+	routeStatusText:Hide()
+	QTT.routeStatusText = routeStatusText
+
+	local routeSkipBtn = CreateTextButton(QTT)
+	routeSkipBtn:SetPoint("LEFT", routeStatusText, "RIGHT", 8, 0)
+	routeSkipBtn:SetLabel("Skip", GREY)
+	routeSkipBtn:SetScript("OnClick", function()
+		SkipStop()
+	end)
+	routeSkipBtn:Hide()
+	QTT.routeSkipBtn = routeSkipBtn
+
+	local routeCancelBtn = CreateTextButton(QTT)
+	routeCancelBtn:SetPoint("LEFT", routeSkipBtn, "RIGHT", 6, 0)
+	routeCancelBtn:SetLabel("Cancel", GREY)
+	routeCancelBtn:SetScript("OnClick", function()
+		StopRoute()
+	end)
+	routeCancelBtn:Hide()
+	QTT.routeCancelBtn = routeCancelBtn
 
 	-- Footer actions, styled as clickable text links
 	local navNearestBtn = CreateTextButton(QTT)
@@ -1464,6 +1868,12 @@ eventFrame:RegisterEvent("QUEST_DETAIL")
 eventFrame:RegisterEvent("QUEST_ACCEPT_CONFIRM")
 eventFrame:RegisterEvent("QUEST_PROGRESS")
 eventFrame:RegisterEvent("QUEST_COMPLETE")
+-- Route All advance signals - QUEST_TURNED_IN is the authoritative "a quest
+-- in the route just got turned in" event (identical on all three flavors -
+-- see the Route planning section above), QUEST_REMOVED covers a quest
+-- leaving the route some other way (abandoned, expired, reset).
+eventFrame:RegisterEvent("QUEST_TURNED_IN")
+eventFrame:RegisterEvent("QUEST_REMOVED")
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
 	if event == "ADDON_LOADED" then
@@ -1483,6 +1893,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
 		end
 	elseif event == "GOSSIP_SHOW" then
 		HandleGossipShow()
+		MergeGossipQuestsIntoCurrentStop()
 	elseif event == "QUEST_GREETING" then
 		HandleQuestGreeting()
 	elseif event == "QUEST_DETAIL" then
@@ -1493,6 +1904,15 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
 		HandleQuestProgress()
 	elseif event == "QUEST_COMPLETE" then
 		HandleQuestComplete()
+	elseif event == "QUEST_TURNED_IN" then
+		HandleQuestTurnedIn(arg1)
+		RefreshList()
+	elseif event == "QUEST_REMOVED" then
+		RemoveQuestFromRoute(arg1)
+		RefreshList()
+	elseif event == "QUEST_LOG_UPDATE" then
+		ValidateRouteAgainstLog()
+		RefreshList()
 	else
 		RefreshList()
 	end
