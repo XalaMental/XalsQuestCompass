@@ -1,21 +1,34 @@
-Copyright (c) 2026 Xal. All Rights Reserved.
+# License
 
-This repository and its contents (including but not limited to the Lua
-source code, TOC file, and bundled icon artwork) are the property of
-the copyright holder. No part of this addon may be copied, modified,
-redistributed, sublicensed, or used to create derivative works without
-the copyright holder's prior written permission.
-
-You may download and use the compiled/released addon through official
-distribution channels (e.g. CurseForge, GitHub Releases) for personal,
-non-commercial use in World of Warcraft, subject to the terms of those
-platforms.
+This project uses different license terms for different parts of it. Read
+the section that applies to the part you're interested in.
 
 ---
 
-Exception -- bundled font:
+## 1. Addon Code and Custom Art (All Rights Reserved)
 
-The font file at Fonts/CustomFont.ttf ("Simply Sans") is licensed
-separately under the SIL Open Font License, included in full at
-Fonts/SimplySans-LICENSE.txt. That license, not the terms above,
-governs use of the font file itself.
+Applies to all `.lua`, `.toc`, `.xml` files and custom artwork, except the
+bundled font covered in section 2 below.
+
+Copyright (c) 2026 Xal. All rights reserved.
+
+This code and artwork may not be copied, redistributed, modified, or reused
+in another project, in whole or in part, without explicit permission from
+the author. If you'd like to use, adapt, or build on any of it, ask first.
+
+---
+
+## 2. Bundled Font
+
+`Fonts/CustomFont.ttf` (Simply Sans Bold) is licensed under the SIL Open
+Font License, not the terms above — see `Fonts/SimplySans-LICENSE.txt` for
+the full text. It's redistributed here exactly as its own license permits.
+
+---
+
+## Summary
+
+| Content | License | Can I fork/reuse it? |
+|---|---|---|
+| Addon code and custom art | All Rights Reserved | No — ask the author first |
+| `Fonts/CustomFont.ttf` | SIL Open Font License | Yes — under the OFL's terms |
