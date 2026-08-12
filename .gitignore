@@ -14,3 +14,7 @@ Thumbs.db
 
 # WoW SavedVariables shouldn't ever live in the addon repo
 WTF/
+
+# Python bytecode cache (from running discord_changelog.py/py_compile locally)
+__pycache__/
+*.pyc
