@@ -2,9 +2,17 @@
 ## Title: Xal's Quest Compass
 ## Notes: Toggleable list of quests that are ready to turn in, with tracking, navigation, and appearance options.
 ## Author: Xal
-## Version: 1.0.0
+## Version: @project-version@
 ## X-Curse-Project-ID: 1635595
 ## SavedVariables: XalsQuestCompassDB
 ## IconTexture: Interface\AddOns\XalsQuestCompass\Icon.png
 
+libs\LibStub\LibStub.lua
+libs\CallbackHandler\CallbackHandler-1.0.lua
+libs\LibDataBroker\LibDataBroker-1.1.lua
+libs\LibDBIcon\LibDBIcon-1.0.lua
+
+BrandStyle.lua
 XalsQuestCompass.lua
+MinimapButton.lua
+WhatsNew.lua
