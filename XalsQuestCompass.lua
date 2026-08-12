@@ -6,6 +6,12 @@
 
 local ADDON_NAME = ...
 
+-- Shared global table so MinimapButton.lua (LibDataBroker/LibDBIcon-based,
+-- same pattern as Routes/Courier) can call back into this file without a
+-- full addonTable restructure - same simple-global-table approach Craft
+-- Courier already uses (XC = XC or {}).
+XQC = XQC or {}
+
 -------------------------------------------------
 -- Colors
 -------------------------------------------------
@@ -175,8 +181,6 @@ local defaults = {
 	point = { "CENTER", "CENTER", 0, 100 },
 	width = 370,
 	height = 420,
-	minimapAngle = 200,
-	minimapHidden = false,
 	autoShow = true,
 	autoNavigateNearest = false,
 	currentZoneOnly = false,
@@ -184,7 +188,10 @@ local defaults = {
 	fontSize = 13,
 	outlineKey = "OUTLINE",
 	fontShadow = true,
+	shadowColor = { 0, 0, 0 },
 	useClassColor = false,
+	customFontColor = { 1, 0.82, 0 },
+	elvuiSkinning = false,
 	windowScale = 0.7,
 	autoTurnIn = false,
 	autoAccept = false,
@@ -204,7 +211,6 @@ end
 -- State
 -------------------------------------------------
 local QTT -- main frame
-local minimapButton
 local optionsPanel
 local rows = {}
 local ROW_WIDTH = 328 -- fallback used before the frame exists
@@ -250,10 +256,11 @@ local function ApplyFontSettings()
 		smallFontObj:SetFont(FONT_OPTIONS[1].path, math.max(8, size - 3), outline.flag)
 	end
 
+	local sc = XalsQuestCompassDB.shadowColor or { 0, 0, 0 }
 	titleFontObj:SetShadowOffset(XalsQuestCompassDB.fontShadow and 1 or 0, XalsQuestCompassDB.fontShadow and -1 or 0)
-	titleFontObj:SetShadowColor(0, 0, 0, XalsQuestCompassDB.fontShadow and 1 or 0)
+	titleFontObj:SetShadowColor(sc[1], sc[2], sc[3], XalsQuestCompassDB.fontShadow and 1 or 0)
 	smallFontObj:SetShadowOffset(XalsQuestCompassDB.fontShadow and 1 or 0, XalsQuestCompassDB.fontShadow and -1 or 0)
-	smallFontObj:SetShadowColor(0, 0, 0, XalsQuestCompassDB.fontShadow and 1 or 0)
+	smallFontObj:SetShadowColor(sc[1], sc[2], sc[3], XalsQuestCompassDB.fontShadow and 1 or 0)
 
 	if QTT then
 		if QTT.title then QTT.title:SetFontObject(titleFontObj) end
@@ -265,7 +272,8 @@ local function GetDefaultTitleColor()
 	if XalsQuestCompassDB.useClassColor then
 		return GetPlayerClassColor()
 	end
-	return GOLD[1], GOLD[2], GOLD[3]
+	local c = XalsQuestCompassDB.customFontColor or GOLD
+	return c[1], c[2], c[3]
 end
 
 -------------------------------------------------
@@ -277,38 +285,29 @@ end
 -- footer actions, the zone toggle), so this one change makes every button in
 -- the addon easier to spot at a glance.
 local function CreateTextButton(parent)
-	local btn = CreateFrame("Button", nil, parent, "BackdropTemplate")
-	btn:SetBackdrop({
-		bgFile = "Interface\\Buttons\\WHITE8x8",
-		edgeFile = "Interface\\Buttons\\WHITE8x8",
-		edgeSize = 1,
-	})
-	btn:SetBackdropColor(1, 1, 1, 0.08)
-	btn:SetBackdropBorderColor(1, 0.82, 0, 0.55)
-	btn:SetHeight(20)
-
-	local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	fs:SetPoint("CENTER")
-	btn.fs = fs
-
-	local hl = btn:CreateTexture(nil, "HIGHLIGHT")
-	hl:SetColorTexture(1, 1, 1, 0.15)
-	hl:SetAllPoints()
+	local Brand = XQC.BrandStyle
+	local btn = Brand.MakeButton(parent, "", 28, 20, nil)
+	btn.label:SetFontObject("GameFontHighlightSmall")
 
 	function btn:SetLabel(text, color)
 		color = color or WHITE
-		fs:SetText(text)
-		fs:SetTextColor(color[1], color[2], color[3])
-		btn:SetWidth(math.max(fs:GetStringWidth() + 20, 28))
+		self.label:SetText(text)
+		self.label:SetTextColor(color[1], color[2], color[3])
+		PixelUtil.SetWidth(self, math.max(self.label:GetStringWidth() + 20, 28))
 	end
 
 	return btn
 end
 
+-- Brand.DrawDivider takes a fixed x/y/width, but call sites here each anchor
+-- their own divider differently (TOPLEFT/TOPRIGHT, BOTTOMLEFT/BOTTOMRIGHT) -
+-- so this keeps the flexible "return a texture, caller anchors it" shape
+-- while matching Brand's actual color/thickness.
 local function CreateDivider(parent)
+	local Brand = XQC.BrandStyle
 	local line = parent:CreateTexture(nil, "ARTWORK")
-	line:SetColorTexture(1, 0.82, 0, 0.35)
-	line:SetHeight(1)
+	line:SetColorTexture(0.16, 0.12, 0.05, 1)
+	PixelUtil.SetHeight(line, Brand.LINE_THICKNESS)
 	return line
 end
 
@@ -931,11 +930,17 @@ function UpdateRouteFooter()
 		QTT.routeAllBtn:Hide()
 		QTT.routeSkipBtn:Show()
 		QTT.routeCancelBtn:Show()
+		-- Stop X/Y + Skip + Cancel is too wide to share the bottom row with
+		-- Track All/Untrack All, so those hide for the duration of the route.
+		if QTT.trackAllBtn then QTT.trackAllBtn:Hide() end
+		if QTT.untrackAllBtn then QTT.untrackAllBtn:Hide() end
 	else
 		QTT.routeStatusText:Hide()
 		QTT.routeSkipBtn:Hide()
 		QTT.routeCancelBtn:Hide()
 		QTT.routeAllBtn:Show()
+		if QTT.trackAllBtn then QTT.trackAllBtn:Show() end
+		if QTT.untrackAllBtn then QTT.untrackAllBtn:Show() end
 	end
 end
 
@@ -1121,47 +1126,84 @@ end
 -- Options panel
 -------------------------------------------------
 
+-- Settings panel typography standard (confirmed 2026-08-09, applies to every
+-- panel in every addon): Blizzard's template default (~10px) is too small
+-- against busy WoW terrain. Description/help text bumps to 13px, brighter
+-- label text (slider labels, Low/High endpoints, checkbox labels) bumps to
+-- 14px. Read the current font via :GetFont() and re-apply at the new size
+-- rather than assuming a starting size.
+local PANEL_DESC_FONT_SIZE = 15 -- baseline bumped from 13 -> 15, matching the Home page body text
+local PANEL_LABEL_FONT_SIZE = 14
+local function BumpFont(fs, size)
+	local font, _, flags = fs:GetFont()
+	fs:SetFont(font, size, flags)
+end
+
 local function CreateOptionsPanel()
+	local Brand = XQC.BrandStyle
 	local panel = CreateFrame("Frame")
 	panel.name = "Xal's Quest Compass"
 
-	local title = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-	title:SetPoint("TOPLEFT", 16, -16)
-	title:SetText("Xal's Quest Compass")
+	-- Bare content only - NO title/border/background of its own. This exact
+	-- frame gets reused in two different contexts (Blizzard's native Settings
+	-- canvas, and the standalone window's content area below), and each of
+	-- those already provides its own chrome - matching Routes' actual
+	-- rootPanel, which has no Brand.Title/border either for the same reason.
+	-- Giving this panel its own header too just stacked a second title/button
+	-- row on top of the standalone window's, overlapping visibly.
 
-	local openBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-	openBtn:SetSize(140, 24)
-	openBtn:SetPoint("TOPRIGHT", -16, -14)
-	openBtn:SetText("Open Window")
-	openBtn:SetScript("OnClick", function()
+	-- Everything scrolls, so settings can never
+	-- get cut off no matter how tall this panel grows -- Blizzard's Settings
+	-- canvas does NOT auto-scroll custom content on its own, which is exactly
+	-- why the Window Scale slider was invisible/unreachable once this panel
+	-- grew past the visible area (fixed 2026-08-07).
+	local scrollFrame = CreateFrame("ScrollFrame", "XalsQuestCompassOptionsScrollFrame", panel, "UIPanelScrollFrameTemplate")
+	scrollFrame:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, 0)
+	-- Right: safe margin PLUS room for the scrollbar itself (~20px), not just
+	-- the margin alone. Bottom: was hardcoded to 4px - nowhere close to the
+	-- 14px safe margin, so scrolled content could sit flush against/behind
+	-- the border instead of clear of it.
+	scrollFrame:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -(Brand.SAFE_MARGIN + 20), Brand.SAFE_MARGIN)
+
+	local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+	scrollChild:SetSize(340, 700) -- generously tall; scrolling handles the rest, so this never needs to be exact
+	scrollFrame:SetScrollChild(scrollChild)
+
+	-- Right-edge anchor is relative to the actual PANEL, not scrollChild's
+	-- fixed 340px width - scrollChild is just a scroll-region placeholder,
+	-- the real available width is the panel's (native Settings frame vs a
+	-- narrower context can differ). A fixed-width-relative anchor here was
+	-- the root cause of text overflowing/misaligning depending on context.
+	local function AnchorRight(fs, x)
+		fs:SetPoint("RIGHT", panel, "RIGHT", x, 0)
+	end
+
+	-- In-content button (not header chrome - Routes' header is title + close
+	-- only) since this panel is reused both natively and in the standalone
+	-- window, and only Quest Compass needs this control at all.
+	local openBtn = Brand.MakeButton(scrollChild, "Open Window", 140, 24, function()
 		if QTT then
 			QTT:Show()
 		else
 			print("|cffff4444Xal's Quest Compass:|r the window didn't initialize. Try /reload.")
 		end
 	end)
-
-	-- Everything below the title/button header scrolls, so settings can never
-	-- get cut off no matter how tall this panel grows -- Blizzard's Settings
-	-- canvas does NOT auto-scroll custom content on its own, which is exactly
-	-- why the Window Scale slider was invisible/unreachable once this panel
-	-- grew past the visible area (fixed 2026-08-07).
-	local scrollFrame = CreateFrame("ScrollFrame", "XalsQuestCompassOptionsScrollFrame", panel, "UIPanelScrollFrameTemplate")
-	scrollFrame:SetPoint("TOPLEFT", title, "BOTTOMLEFT", -2, -12)
-	scrollFrame:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -30, 4)
-
-	local scrollChild = CreateFrame("Frame", nil, scrollFrame)
-	scrollChild:SetSize(340, 700) -- generously tall; scrolling handles the rest, so this never needs to be exact
-	scrollFrame:SetScrollChild(scrollChild)
+	openBtn:SetPoint("TOPLEFT", 2, 0)
+	panel.openBtn = openBtn
 
 	local subtitle = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	subtitle:SetPoint("TOPLEFT", 2, 0)
-	subtitle:SetPoint("RIGHT", -20, 0)
+	subtitle:SetPoint("TOPLEFT", openBtn, "BOTTOMLEFT", 0, -16)
+	AnchorRight(subtitle, -30)
 	subtitle:SetJustifyH("LEFT")
+	subtitle:SetWordWrap(true)
+	BumpFont(subtitle, PANEL_DESC_FONT_SIZE)
 	subtitle:SetText("Toggle the quest window with /xqc or the minimap button. Click Navigate on any quest for an on-screen arrow.")
 
 	local autoShowCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
 	autoShowCB:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", -2, -24)
+	AnchorRight(autoShowCB.Text, -30)
+	autoShowCB.Text:SetWordWrap(true)
+	BumpFont(autoShowCB.Text, PANEL_LABEL_FONT_SIZE)
 	autoShowCB.Text:SetText("Automatically open the window when a quest becomes ready to turn in")
 	autoShowCB:SetChecked(XalsQuestCompassDB.autoShow)
 	autoShowCB:SetScript("OnClick", function(self)
@@ -1171,6 +1213,9 @@ local function CreateOptionsPanel()
 
 	local autoNavCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
 	autoNavCB:SetPoint("TOPLEFT", autoShowCB, "BOTTOMLEFT", 0, -8)
+	AnchorRight(autoNavCB.Text, -30)
+	autoNavCB.Text:SetWordWrap(true)
+	BumpFont(autoNavCB.Text, PANEL_LABEL_FONT_SIZE)
 	autoNavCB.Text:SetText("Automatically point the arrow at the nearest turn-in when none is selected")
 	autoNavCB:SetChecked(XalsQuestCompassDB.autoNavigateNearest)
 	autoNavCB:SetScript("OnClick", function(self)
@@ -1180,6 +1225,9 @@ local function CreateOptionsPanel()
 
 	local zoneOnlyCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
 	zoneOnlyCB:SetPoint("TOPLEFT", autoNavCB, "BOTTOMLEFT", 0, -8)
+	AnchorRight(zoneOnlyCB.Text, -30)
+	zoneOnlyCB.Text:SetWordWrap(true)
+	BumpFont(zoneOnlyCB.Text, PANEL_LABEL_FONT_SIZE)
 	zoneOnlyCB.Text:SetText("Only show quests ready to turn in within my current zone")
 	zoneOnlyCB:SetChecked(XalsQuestCompassDB.currentZoneOnly)
 	zoneOnlyCB:SetScript("OnClick", function(self)
@@ -1191,23 +1239,31 @@ local function CreateOptionsPanel()
 
 	local minimapCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
 	minimapCB:SetPoint("TOPLEFT", zoneOnlyCB, "BOTTOMLEFT", 0, -8)
+	AnchorRight(minimapCB.Text, -30)
+	minimapCB.Text:SetWordWrap(true)
+	BumpFont(minimapCB.Text, PANEL_LABEL_FONT_SIZE)
 	minimapCB.Text:SetText("Show minimap button")
-	minimapCB:SetChecked(not XalsQuestCompassDB.minimapHidden)
+	minimapCB:SetChecked(not (XalsQuestCompassDB.minimap and XalsQuestCompassDB.minimap.hide))
 	minimapCB:SetScript("OnClick", function(self)
-		XalsQuestCompassDB.minimapHidden = not self:GetChecked()
-		if minimapButton then
-			minimapButton:SetShown(self:GetChecked())
+		if XQC.MinimapButton and XQC.MinimapButton.SetShown then
+			XQC.MinimapButton:SetShown(self:GetChecked())
 		end
 	end)
 	panel.minimapCB = minimapCB
 
 	-- Automation section
-	local automationTitle = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-	automationTitle:SetPoint("TOPLEFT", minimapCB, "BOTTOMLEFT", 2, -20)
-	automationTitle:SetText("Automation")
+	local automationTitle = Brand.FS(scrollChild, "Automation", "Fonts\\FRIZQT__.TTF", 16, "",
+		Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	automationTitle:SetPoint("TOPLEFT", minimapCB, "BOTTOMLEFT", 2, -22)
+	local automationDivider = CreateDivider(scrollChild)
+	automationDivider:SetPoint("TOPLEFT", automationTitle, "BOTTOMLEFT", 0, -6)
+	automationDivider:SetPoint("RIGHT", scrollChild, "RIGHT", -2, 0)
 
 	local autoTurnInCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
-	autoTurnInCB:SetPoint("TOPLEFT", automationTitle, "BOTTOMLEFT", -2, -12)
+	autoTurnInCB:SetPoint("TOPLEFT", automationTitle, "BOTTOMLEFT", -2, -22)
+	AnchorRight(autoTurnInCB.Text, -30)
+	autoTurnInCB.Text:SetWordWrap(true)
+	BumpFont(autoTurnInCB.Text, PANEL_LABEL_FONT_SIZE)
 	autoTurnInCB.Text:SetText("Automatically turn in quests with no reward choice to make")
 	autoTurnInCB:SetChecked(XalsQuestCompassDB.autoTurnIn)
 	autoTurnInCB:SetScript("OnClick", function(self)
@@ -1217,6 +1273,9 @@ local function CreateOptionsPanel()
 
 	local autoAcceptCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
 	autoAcceptCB:SetPoint("TOPLEFT", autoTurnInCB, "BOTTOMLEFT", 0, -8)
+	AnchorRight(autoAcceptCB.Text, -30)
+	autoAcceptCB.Text:SetWordWrap(true)
+	BumpFont(autoAcceptCB.Text, PANEL_LABEL_FONT_SIZE)
 	autoAcceptCB.Text:SetText("Automatically accept new quests offered by NPCs")
 	autoAcceptCB:SetChecked(XalsQuestCompassDB.autoAccept)
 	autoAcceptCB:SetScript("OnClick", function(self)
@@ -1226,12 +1285,17 @@ local function CreateOptionsPanel()
 
 	local automationNote = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 	automationNote:SetPoint("TOPLEFT", autoAcceptCB, "BOTTOMLEFT", 24, -4)
-	automationNote:SetPoint("RIGHT", -16, 0)
+	AnchorRight(automationNote, -30)
 	automationNote:SetJustifyH("LEFT")
+	automationNote:SetWordWrap(true)
+	BumpFont(automationNote, PANEL_DESC_FONT_SIZE)
 	automationNote:SetText("Skips quests with more than one reward to choose from, quests that cost money to turn in, and a few quest types known to behave oddly (escort, item-start, PvP-flagged) - those still open normally so you can handle them yourself. Hold Shift to pause automation at any time.")
 
 	local readySoundCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
 	readySoundCB:SetPoint("TOPLEFT", automationNote, "BOTTOMLEFT", -24, -10)
+	AnchorRight(readySoundCB.Text, -30)
+	readySoundCB.Text:SetWordWrap(true)
+	BumpFont(readySoundCB.Text, PANEL_LABEL_FONT_SIZE)
 	readySoundCB.Text:SetText("Play a sound when a quest becomes ready to turn in")
 	readySoundCB:SetChecked(XalsQuestCompassDB.readySound)
 	readySoundCB:SetScript("OnClick", function(self)
@@ -1240,12 +1304,16 @@ local function CreateOptionsPanel()
 	panel.readySoundCB = readySoundCB
 
 	-- Appearance section
-	local appearanceTitle = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-	appearanceTitle:SetPoint("TOPLEFT", readySoundCB, "BOTTOMLEFT", 2, -20)
-	appearanceTitle:SetText("Appearance")
+	local appearanceTitle = Brand.FS(scrollChild, "Appearance", "Fonts\\FRIZQT__.TTF", 16, "",
+		Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	appearanceTitle:SetPoint("TOPLEFT", readySoundCB, "BOTTOMLEFT", 2, -22)
+	local appearanceDivider = CreateDivider(scrollChild)
+	appearanceDivider:SetPoint("TOPLEFT", appearanceTitle, "BOTTOMLEFT", 0, -6)
+	appearanceDivider:SetPoint("RIGHT", scrollChild, "RIGHT", -2, 0)
 
 	local fontLabel = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	fontLabel:SetPoint("TOPLEFT", appearanceTitle, "BOTTOMLEFT", 0, -12)
+	fontLabel:SetPoint("TOPLEFT", appearanceTitle, "BOTTOMLEFT", 0, -22)
+	BumpFont(fontLabel, PANEL_LABEL_FONT_SIZE)
 	fontLabel:SetText("Font")
 
 	local fontDropdown = CreateFrame("Frame", "XalsQuestCompassFontDropdown", scrollChild, "UIDropDownMenuTemplate")
@@ -1272,6 +1340,7 @@ local function CreateOptionsPanel()
 
 	local outlineLabel = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	outlineLabel:SetPoint("TOPLEFT", fontDropdown, "BOTTOMLEFT", 16, -4)
+	BumpFont(outlineLabel, PANEL_LABEL_FONT_SIZE)
 	outlineLabel:SetText("Font Outline")
 
 	local outlineDropdown = CreateFrame("Frame", "XalsQuestCompassOutlineDropdown", scrollChild, "UIDropDownMenuTemplate")
@@ -1302,19 +1371,39 @@ local function CreateOptionsPanel()
 	sizeSlider:SetValueStep(1)
 	sizeSlider:SetObeyStepOnDrag(true)
 	sizeSlider:SetWidth(190)
+	BumpFont(_G[sizeSlider:GetName() .. "Low"], PANEL_LABEL_FONT_SIZE)
+	BumpFont(_G[sizeSlider:GetName() .. "High"], PANEL_LABEL_FONT_SIZE)
 	_G[sizeSlider:GetName() .. "Low"]:SetText("10")
 	_G[sizeSlider:GetName() .. "High"]:SetText("22")
-	_G[sizeSlider:GetName() .. "Text"]:SetText("Font Size")
+	-- Own FontString for the live value, NOT the template's built-in "Text"
+	-- region - that region did not reliably render here (stayed invisible
+	-- across two attempts at repositioning it), and OptionsSliderTemplate's
+	-- internals have a documented history of shifting/being altered across
+	-- WoW versions. A FontString this code creates and owns directly is
+	-- guaranteed to render regardless of what the template does internally.
+	local sizeValueText = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	sizeValueText:SetPoint("BOTTOM", sizeSlider, "TOP", 0, 4)
+	BumpFont(sizeValueText, PANEL_LABEL_FONT_SIZE)
+	sizeValueText:SetTextColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	local function UpdateSizeSliderText()
+		sizeValueText:SetText("Font Size: " .. (XalsQuestCompassDB.fontSize or 13))
+	end
 	sizeSlider:SetValue(XalsQuestCompassDB.fontSize or 13)
+	UpdateSizeSliderText()
 	sizeSlider:SetScript("OnValueChanged", function(self, value)
 		value = math.floor(value + 0.5)
 		XalsQuestCompassDB.fontSize = value
 		ApplyFontSettings()
+		UpdateSizeSliderText()
 	end)
 	panel.sizeSlider = sizeSlider
+	panel.UpdateSizeSliderText = UpdateSizeSliderText
 
 	local shadowCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
-	shadowCB:SetPoint("TOPLEFT", sizeSlider, "BOTTOMLEFT", -16, -28)
+	shadowCB:SetPoint("TOPLEFT", sizeSlider, "BOTTOMLEFT", -16, -30)
+	AnchorRight(shadowCB.Text, -30)
+	shadowCB.Text:SetWordWrap(true)
+	BumpFont(shadowCB.Text, PANEL_LABEL_FONT_SIZE)
 	shadowCB.Text:SetText("Text shadow")
 	shadowCB:SetChecked(XalsQuestCompassDB.fontShadow)
 	shadowCB:SetScript("OnClick", function(self)
@@ -1325,6 +1414,9 @@ local function CreateOptionsPanel()
 
 	local classColorCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
 	classColorCB:SetPoint("TOPLEFT", shadowCB, "BOTTOMLEFT", 0, -8)
+	AnchorRight(classColorCB.Text, -30)
+	classColorCB.Text:SetWordWrap(true)
+	BumpFont(classColorCB.Text, PANEL_LABEL_FONT_SIZE)
 	classColorCB.Text:SetText("Use my class color for quest titles")
 	classColorCB:SetChecked(XalsQuestCompassDB.useClassColor)
 	classColorCB:SetScript("OnClick", function(self)
@@ -1334,27 +1426,46 @@ local function CreateOptionsPanel()
 	panel.classColorCB = classColorCB
 
 	local scaleSlider = CreateFrame("Slider", "XalsQuestCompassScaleSlider", scrollChild, "OptionsSliderTemplate")
-	scaleSlider:SetPoint("TOPLEFT", classColorCB, "BOTTOMLEFT", 16, -24)
+	scaleSlider:SetPoint("TOPLEFT", classColorCB, "BOTTOMLEFT", 16, -30)
 	scaleSlider:SetMinMaxValues(0.7, 1.5)
 	scaleSlider:SetValueStep(0.05)
 	scaleSlider:SetObeyStepOnDrag(true)
 	scaleSlider:SetWidth(190)
+	BumpFont(_G[scaleSlider:GetName() .. "Low"], PANEL_LABEL_FONT_SIZE)
+	BumpFont(_G[scaleSlider:GetName() .. "High"], PANEL_LABEL_FONT_SIZE)
 	_G[scaleSlider:GetName() .. "Low"]:SetText("0.7")
 	_G[scaleSlider:GetName() .. "High"]:SetText("1.5")
-	_G[scaleSlider:GetName() .. "Text"]:SetText("Window Scale")
+	-- Own FontString, not the template's built-in "Text" region - see the
+	-- matching comment on sizeSlider above for why.
+	local scaleValueText = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	scaleValueText:SetPoint("BOTTOM", scaleSlider, "TOP", 0, 4)
+	BumpFont(scaleValueText, PANEL_LABEL_FONT_SIZE)
+	scaleValueText:SetTextColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	local function UpdateScaleSliderText()
+		scaleValueText:SetText(string.format("Window Scale: %.2f", XalsQuestCompassDB.windowScale or 1.0))
+	end
 	scaleSlider:SetValue(XalsQuestCompassDB.windowScale or 1.0)
+	UpdateScaleSliderText()
 	scaleSlider:SetScript("OnValueChanged", function(self, value)
 		value = math.floor(value * 20 + 0.5) / 20
 		XalsQuestCompassDB.windowScale = value
 		ApplyFontSettings()
+		UpdateScaleSliderText()
 	end)
 	panel.scaleSlider = scaleSlider
+	panel.UpdateScaleSliderText = UpdateScaleSliderText
 
 	panel:SetScript("OnShow", function()
+		-- Blizzard's ScrollFrame does not reset to the top on its own - without
+		-- this, reopening the panel can land mid-scroll, making the top few
+		-- settings (subtitle, auto-show, auto-navigate, zone-only, minimap
+		-- button, the "Automation" header) look like they've vanished when
+		-- they're just scrolled out of view above the visible area.
+		scrollFrame:SetVerticalScroll(0)
 		autoShowCB:SetChecked(XalsQuestCompassDB.autoShow)
 		autoNavCB:SetChecked(XalsQuestCompassDB.autoNavigateNearest)
 		zoneOnlyCB:SetChecked(XalsQuestCompassDB.currentZoneOnly)
-		minimapCB:SetChecked(not XalsQuestCompassDB.minimapHidden)
+		minimapCB:SetChecked(not (XalsQuestCompassDB.minimap and XalsQuestCompassDB.minimap.hide))
 		autoTurnInCB:SetChecked(XalsQuestCompassDB.autoTurnIn)
 		autoAcceptCB:SetChecked(XalsQuestCompassDB.autoAccept)
 		readySoundCB:SetChecked(XalsQuestCompassDB.readySound)
@@ -1362,6 +1473,8 @@ local function CreateOptionsPanel()
 		classColorCB:SetChecked(XalsQuestCompassDB.useClassColor)
 		sizeSlider:SetValue(XalsQuestCompassDB.fontSize or 13)
 		scaleSlider:SetValue(XalsQuestCompassDB.windowScale or 1.0)
+		UpdateSizeSliderText()
+		UpdateScaleSliderText()
 		RefreshFontDropdownText()
 		RefreshOutlineDropdownText()
 	end)
@@ -1377,13 +1490,767 @@ local function CreateOptionsPanel()
 	optionsPanel = panel
 end
 
+--------------------------------------------------------------------------------
+-- Standalone floating window: the PRIMARY way into settings now, matching
+-- Xal's Xpedited Routes' SettingsPanel.lua BuildStandaloneWindow exactly
+-- (the confirmed reference - branded background/border/centered title/close
+-- button/full-width divider, UISpecialFrames so Escape closes it). The
+-- native Esc -> Options list entry stays too, as a secondary path - same
+-- split as every other addon per project_addon_settings_pattern.
+--
+-- This REUSES the exact same `optionsPanel` frame built above by reparenting
+-- it into this window's content area, rather than rebuilding its controls a
+-- second time. Every widget inside it is positioned relative to that panel's
+-- OWN frame, so moving the frame doesn't disturb anything inside it. When the
+-- player later opens the native Esc -> Options entry, Blizzard's Settings
+-- system re-parents the panel back into its own canvas automatically the way
+-- it always does for any RegisterCanvasLayoutCategory panel - nothing here
+-- needs to undo the reparenting itself.
+--------------------------------------------------------------------------------
+local standaloneFrame
+
+local function BuildStandaloneOptionsWindow()
+	if standaloneFrame then return standaloneFrame end
+	local Brand = XQC.BrandStyle
+	-- Width = left margin(14) + sidebar(132) + gap-to-divider(10) +
+	-- divider(2) + gap-to-content(12) + content(540) + right margin(14).
+	-- Widened from 480 to 540 (2026-08-11) - the tight fit was forcing
+	-- individual widgets (the Font Size slider's Low label) right up against
+	-- the scroll area's clip edge instead of leaving real breathing room.
+	local FW, FH = 724, 820
+
+	local f = CreateFrame("Frame", "XalsQuestCompassStandaloneOptions", UIParent, "BackdropTemplate")
+	tinsert(UISpecialFrames, "XalsQuestCompassStandaloneOptions")
+	f:SetSize(FW, FH)
+	f:SetPoint("CENTER")
+	f:SetFrameStrata("DIALOG")
+	f:SetMovable(true)
+	f:EnableMouse(true)
+	f:RegisterForDrag("LeftButton")
+	f:SetScript("OnDragStart", f.StartMoving)
+	f:SetScript("OnDragStop", f.StopMovingOrSizing)
+	f:SetClampedToScreen(true)
+
+	Brand.ApplyBackground(f)
+	Brand.DrawBorder(f)
+	-- Roughly centered between the top border (~8px) and the header divider
+	-- (now 80px) - best estimate accounting for the title+shadow's visual
+	-- height, not a precise measurement, may need a small nudge once seen live.
+	Brand.Title(f, "Xal's Quest Compass", 32, "TOP", f, "TOP", 0, -20)
+
+	-- Header is title + close button ONLY, matching Routes' actual standalone
+	-- window exactly - no other controls up there.
+	local closeBtn = Brand.MakeButton(f, "X", 24, 24, function() f:Hide() end)
+	PixelUtil.SetPoint(closeBtn, "TOPRIGHT", f, "TOPRIGHT", -Brand.SAFE_MARGIN, -Brand.SAFE_MARGIN)
+
+	-- Pushed down from 66 to 80 - the bigger title + stronger shadow (32pt,
+	-- 4px offset) was reaching far enough down to visually cut into the
+	-- divider at the old position.
+	Brand.DrawDivider(f, Brand.SAFE_MARGIN, 80, FW - Brand.SAFE_MARGIN * 2)
+
+	-- STEP 2: sidebar shell - section buttons + vertical divider, matching
+	-- Routes' sidebar exactly (132px sidebar, 116px buttons, 8px side pad,
+	-- -4 gap between buttons, vDivider 10px off the sidebar's right edge).
+	-- Buttons don't do anything yet - content comes one section at a time.
+	-- Back to sitting right below the header divider (80) - this frame's
+	-- own position also defines vDivider's top via the anchor below, so
+	-- moving IT down was what shortened/dragged the vertical divider last
+	-- time. The actual button buffer is added on the buttons themselves
+	-- further down, not here.
+	local sidebar = CreateFrame("Frame", nil, f)
+	sidebar:SetPoint("TOPLEFT", f, "TOPLEFT", Brand.SAFE_MARGIN, -88)
+	sidebar:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", Brand.SAFE_MARGIN, Brand.SAFE_MARGIN)
+	sidebar:SetWidth(132)
+
+	local vDivider = f:CreateTexture(nil, "ARTWORK")
+	vDivider:SetWidth(Brand.LINE_THICKNESS)
+	vDivider:SetColorTexture(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1)
+	vDivider:SetPoint("TOPLEFT", sidebar, "TOPRIGHT", 10, 0)
+	vDivider:SetPoint("BOTTOMLEFT", sidebar, "BOTTOMRIGHT", 10, 0)
+
+	-- Bottom leaves extra clearance above SAFE_MARGIN so content never
+	-- collides with the footer version line anchored at the true bottom.
+	local contentArea = CreateFrame("Frame", nil, f)
+	contentArea:SetPoint("TOPLEFT", vDivider, "TOPRIGHT", 26, 0)
+	-- This is a stopgap, not a real fix - content that's taller than the
+	-- panel will still run into the footer regardless of this margin. The
+	-- real fix is the scroll frame noted as future work (task: draggable-
+	-- thumb scrollbar, not Blizzard's arrow-button style).
+	contentArea:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -Brand.SAFE_MARGIN, Brand.SAFE_MARGIN + 36)
+
+	----------------------------------------------------------------
+	-- Home panel - icon-anchored hero moment into detail, not a flat
+	-- stacked paragraph block. Icon centered at top, a bold pull-quote
+	-- lead line, a short decorative rule, then centered body copy with
+	-- key phrases highlighted in accent gold inline.
+	----------------------------------------------------------------
+	local ACCENT_HEX = string.format("ff%02x%02x%02x",
+		Brand.ACCENT[1] * 255, Brand.ACCENT[2] * 255, Brand.ACCENT[3] * 255)
+	local function Highlight(text) return "|c" .. ACCENT_HEX .. text .. "|r" end
+	-- WoW's own epic-item purple - a one-off accent just for Jo's name in the
+	-- dedication, not a general brand color.
+	local function PurpleHighlight(text) return "|cffa335ee" .. text .. "|r" end
+
+	local homePanel = CreateFrame("Frame", nil, contentArea)
+	homePanel:SetAllPoints(contentArea)
+
+	local BODY_WIDTH = 360 -- narrower than the full content area, centered
+
+	local homeIcon = homePanel:CreateTexture(nil, "ARTWORK")
+	homeIcon:SetSize(144, 144)
+	homeIcon:SetPoint("TOP", homePanel, "TOP", 0, 0)
+	homeIcon:SetTexture("Interface\\AddOns\\" .. ADDON_NAME .. "\\Icon.png")
+	homeIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+	local homeLead = Brand.FS(homePanel, "Thanks for using Xal's Quest Compass.", "Fonts\\FRIZQT__.TTF", 26, "",
+		Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	homeLead:SetPoint("TOP", homeIcon, "BOTTOM", 0, -14)
+	homeLead:SetWidth(BODY_WIDTH)
+	homeLead:SetJustifyH("CENTER")
+	homeLead:SetWordWrap(true)
+
+	local homeRule = Brand.T(homePanel, 0, 0, 60, Brand.LINE_THICKNESS,
+		Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1)
+	homeRule:ClearAllPoints()
+	homeRule:SetPoint("TOP", homeLead, "BOTTOM", 0, -14)
+
+	local homeBody1 = Brand.FS(homePanel,
+		"Quests pile up complete in your log and it's easy to lose track of which ones are actually ready to hand in. I built this addon to fix exactly that - a clean list of what's ready, sorted by distance, with one click to "
+			.. Highlight("navigate") .. " and one click to " .. Highlight("track") .. ".",
+		"Fonts\\ARIALN.TTF", 15, "", 0.85, 0.85, 0.85)
+	homeBody1:SetPoint("TOP", homeRule, "BOTTOM", 0, -18)
+	homeBody1:SetWidth(BODY_WIDTH)
+	homeBody1:SetJustifyH("CENTER")
+	homeBody1:SetWordWrap(true)
+
+	local homeBody2 = Brand.FS(homePanel,
+		Highlight("Route All") .. " takes it further: one button plans a route through everything you're ready to turn in and walks you through it, stop by stop.",
+		"Fonts\\ARIALN.TTF", 15, "", 0.85, 0.85, 0.85)
+	homeBody2:SetPoint("TOP", homeBody1, "BOTTOM", 0, -14)
+	homeBody2:SetWidth(BODY_WIDTH)
+	homeBody2:SetJustifyH("CENTER")
+	homeBody2:SetWordWrap(true)
+
+	local homeBody3 = Brand.FS(homePanel,
+		"Everything else in this window is where you make it yours.",
+		"Fonts\\ARIALN.TTF", 15, "", 0.85, 0.85, 0.85)
+	homeBody3:SetPoint("TOP", homeBody2, "BOTTOM", 0, -14)
+	homeBody3:SetWidth(BODY_WIDTH)
+	homeBody3:SetJustifyH("CENTER")
+	homeBody3:SetWordWrap(true)
+
+	-- Dropped to the bottom of the panel, separate from the body-paragraph
+	-- chain above, and styled to stand out (accent gold, not the flat body
+	-- gray) so it reads as a distinct, noticeable callout, not just another
+	-- paragraph in the stack.
+	local homeDedication = Brand.FS(homePanel,
+		"This one's for " .. PurpleHighlight('"Jo"')
+			.. " \194\183 my go-to traveling companion, dungeons and everything else. \"Oops, dang it, didn't turn that in\" one too many times, so I built this to help you out in-game the way you make my adventuring a whole lot more pleasant.\nHere you go, friend.",
+		"Fonts\\FRIZQT__.TTF", 13, "", Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	homeDedication:SetPoint("BOTTOM", homePanel, "BOTTOM", 0, 22)
+	homeDedication:SetWidth(BODY_WIDTH)
+	homeDedication:SetJustifyH("CENTER")
+	homeDedication:SetWordWrap(true)
+
+	----------------------------------------------------------------
+	-- Behavior panel - each setting is its own card: Morpheus header, a
+	-- divider under it, a brief description, then the checkbox line. Not a
+	-- flat checkbox-plus-long-label list.
+	----------------------------------------------------------------
+	local behaviorPanel = CreateFrame("Frame", nil, contentArea)
+	behaviorPanel:SetAllPoints(contentArea)
+	behaviorPanel:Hide()
+
+	-- Shared card head (header + shadow, divider, description) - the part
+	-- that's identical no matter what kind of control the card ends with.
+	-- Returns the description FontString so the caller anchors whatever
+	-- control fits (checkbox, dropdown, slider) below it.
+	local function AddCardHeader(parent, anchorTo, gap, name, description)
+		-- Shadow layer first (same duplicate-offset technique Brand.Title
+		-- uses), then the real header on top - left-justified, confirmed
+		-- 2026-08-11 after an A/B test against centered.
+		local headerShadow = Brand.FS(parent, name, "Fonts\\MORPHEUS.TTF", 24, "OUTLINE", 0, 0, 0)
+		local header = Brand.FS(parent, name, "Fonts\\MORPHEUS.TTF", 24, "OUTLINE",
+			Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+		if anchorTo then
+			header:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, gap)
+		else
+			-- gap doubles as the top-of-panel buffer here (Behavior's first
+			-- card gets this for free via openWindowBtn sitting above it;
+			-- a panel with no leading button needs it passed explicitly).
+			-- x=8, not 0: a real left margin so nothing in the chain below
+			-- (every other card anchors relative to this one) sits flush
+			-- against a scrollable section's clip edge - that flush-left fit
+			-- was what clipped the Font Size slider's Low label.
+			header:SetPoint("TOPLEFT", parent, "TOPLEFT", 8, gap)
+		end
+		headerShadow:SetPoint("TOPLEFT", header, "TOPLEFT", 4, -4)
+
+		local divider = CreateDivider(parent)
+		divider:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -6)
+		divider:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
+
+		local desc = Brand.FS(parent, description, "Fonts\\ARIALN.TTF", PANEL_DESC_FONT_SIZE, "", 0.85, 0.85, 0.85)
+		desc:SetPoint("TOPLEFT", divider, "BOTTOMLEFT", 0, -16)
+		desc:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
+		desc:SetJustifyH("LEFT")
+		desc:SetWordWrap(true)
+
+		return desc
+	end
+
+	-- Checkbox-ending card (Behavior/Automation) - built on AddCardHeader.
+	-- Returns {checkbox, bottomAnchor} so the caller can chain the next
+	-- card off bottomAnchor.
+	local function AddSettingCard(parent, anchorTo, gap, name, description, isChecked, onClick)
+		local desc = AddCardHeader(parent, anchorTo, gap, name, description)
+
+		local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
+		cb:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", -2, -12)
+		BumpFont(cb.Text, PANEL_LABEL_FONT_SIZE)
+		cb.Text:SetText("Enabled")
+		cb:SetChecked(isChecked)
+		cb:SetScript("OnClick", onClick)
+
+		return cb, cb
+	end
+
+	local openWindowBtn = Brand.MakeButton(behaviorPanel, "Open Window", 140, 24, function()
+		if QTT then
+			QTT:Show()
+		else
+			print("|cffff4444Xal's Quest Compass:|r the window didn't initialize. Try /reload.")
+		end
+	end)
+	openWindowBtn:SetPoint("TOPLEFT", behaviorPanel, "TOPLEFT", 0, -32)
+
+	local CARD_GAP = -28
+
+	local autoShowCB, anchor1 = AddSettingCard(behaviorPanel, openWindowBtn, CARD_GAP,
+		"Auto-Show", "Opens the window automatically the moment a quest becomes ready.",
+		XalsQuestCompassDB.autoShow,
+		function(self) XalsQuestCompassDB.autoShow = self:GetChecked() and true or false end)
+
+	local autoNavCB, anchor2 = AddSettingCard(behaviorPanel, anchor1, CARD_GAP,
+		"Auto-Navigate", "Points the arrow at the nearest turn-in when nothing else is selected.",
+		XalsQuestCompassDB.autoNavigateNearest,
+		function(self) XalsQuestCompassDB.autoNavigateNearest = self:GetChecked() and true or false end)
+
+	local zoneOnlyCB, anchor3 = AddSettingCard(behaviorPanel, anchor2, CARD_GAP,
+		"Zone Filter", "Only shows quests ready to turn in within your current zone.",
+		XalsQuestCompassDB.currentZoneOnly,
+		function(self)
+			XalsQuestCompassDB.currentZoneOnly = self:GetChecked() and true or false
+			if QTT and QTT.zoneToggleBtn then QTT.zoneToggleBtn:UpdateText() end
+			RefreshList()
+		end)
+
+	local minimapCB, anchor4 = AddSettingCard(behaviorPanel, anchor3, CARD_GAP,
+		"Minimap Button", "Shows the clickable icon on your minimap.",
+		not (XalsQuestCompassDB.minimap and XalsQuestCompassDB.minimap.hide),
+		function(self)
+			if XQC.MinimapButton and XQC.MinimapButton.SetShown then
+				XQC.MinimapButton:SetShown(self:GetChecked())
+			end
+		end)
+
+	behaviorPanel:SetScript("OnShow", function()
+		autoShowCB:SetChecked(XalsQuestCompassDB.autoShow)
+		autoNavCB:SetChecked(XalsQuestCompassDB.autoNavigateNearest)
+		zoneOnlyCB:SetChecked(XalsQuestCompassDB.currentZoneOnly)
+		minimapCB:SetChecked(not (XalsQuestCompassDB.minimap and XalsQuestCompassDB.minimap.hide))
+	end)
+
+	----------------------------------------------------------------
+	-- Automation panel - every safety guarantee stated explicitly and
+	-- completely in each card's own description, not summarized away or
+	-- left to a shared footnote, so there's no way to misread what either
+	-- toggle will or won't do. Both automation cards independently restate
+	-- the Shift-to-pause behavior for the same reason.
+	----------------------------------------------------------------
+	local automationPanel = CreateFrame("Frame", nil, contentArea)
+	automationPanel:SetAllPoints(contentArea)
+	automationPanel:Hide()
+
+	local autoTurnInCB, autoTurnInAnchor = AddSettingCard(automationPanel, nil, -32,
+		"Auto Turn-In",
+		"Completes quests automatically, but only when there's nothing to choose - any quest with more than one reward option, or one that costs you money, is always left for you to finish yourself. Hold Shift at any time to pause it instantly.",
+		XalsQuestCompassDB.autoTurnIn,
+		function(self) XalsQuestCompassDB.autoTurnIn = self:GetChecked() and true or false end)
+
+	local autoAcceptCB, autoAcceptAnchor = AddSettingCard(automationPanel, autoTurnInAnchor, CARD_GAP,
+		"Auto Accept",
+		"Accepts new quests from NPCs automatically. Escort, item-start, and PvP-flagged quests are always skipped and left for you, since they need special handling. Hold Shift at any time to pause it instantly.",
+		XalsQuestCompassDB.autoAccept,
+		function(self) XalsQuestCompassDB.autoAccept = self:GetChecked() and true or false end)
+
+	local readySoundCB, readySoundAnchor = AddSettingCard(automationPanel, autoAcceptAnchor, CARD_GAP,
+		"Ready Sound",
+		"Plays a short chime the moment a quest becomes ready to turn in.",
+		XalsQuestCompassDB.readySound,
+		function(self) XalsQuestCompassDB.readySound = self:GetChecked() and true or false end)
+
+	automationPanel:SetScript("OnShow", function()
+		autoTurnInCB:SetChecked(XalsQuestCompassDB.autoTurnIn)
+		autoAcceptCB:SetChecked(XalsQuestCompassDB.autoAccept)
+		readySoundCB:SetChecked(XalsQuestCompassDB.readySound)
+	end)
+
+	-- Wraps a content-building region in a scrollable area with a custom
+	-- thin scrollbar in the addon's own flat brand style - a native Slider
+	-- drives the actual scroll position (reliable drag physics for free),
+	-- restyled to a thin accent-gold thumb instead of Blizzard's default
+	-- slider art. NOT Blizzard's default arrow-button scrollbar (explicitly
+	-- disliked) and NOT an attempt to reuse the character-select screen's
+	-- scrollbar, which is rendered by the separate pre-login Glue UI and
+	-- isn't reachable from an in-game addon at all. Auto-hides when content
+	-- fits without scrolling. Returns the scrollChild to build content into,
+	-- and an UpdateScrollRange() function to call once content is built (and
+	-- sized) so the scrollbar knows whether it's actually needed.
+	local function CreateScrollableSection(parent)
+		local scrollFrame = CreateFrame("ScrollFrame", nil, parent)
+		scrollFrame:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, 0)
+		scrollFrame:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", -18, 0)
+
+		-- Derived from the panel's own real width (minus the 18px just
+		-- reserved for the scrollbar track above), not a hardcoded guess -
+		-- a hardcoded content width previously drifted wider than the actual
+		-- viewport (540 vs. the real ~508px available), which silently
+		-- clipped anything word-wrapped near the right edge (caught
+		-- 2026-08-11: "Text Shadow"'s description cut "swatch" mid-word).
+		local contentWidth = parent:GetWidth() - 18
+
+		local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+		scrollChild:SetSize(contentWidth, 1)
+		scrollFrame:SetScrollChild(scrollChild)
+
+		local track = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+		track:SetPoint("TOPRIGHT", parent, "TOPRIGHT", 0, 0)
+		track:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", 0, 0)
+		track:SetWidth(8)
+		track:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8" })
+		track:SetBackdropColor(1, 1, 1, 0.08)
+		track:Hide()
+
+		local thumbSlider = CreateFrame("Slider", nil, track)
+		thumbSlider:SetOrientation("VERTICAL")
+		thumbSlider:SetPoint("TOP", track, "TOP", 0, 0)
+		thumbSlider:SetPoint("BOTTOM", track, "BOTTOM", 0, 0)
+		thumbSlider:SetWidth(8)
+		thumbSlider:SetThumbTexture("Interface\\Buttons\\WHITE8x8")
+		local thumbTex = thumbSlider:GetThumbTexture()
+		thumbTex:SetVertexColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1)
+		thumbTex:SetWidth(8)
+
+		local suppressCallback = false
+		thumbSlider:SetScript("OnValueChanged", function(self, value)
+			if suppressCallback then return end
+			scrollFrame:SetVerticalScroll(value)
+		end)
+
+		scrollFrame:EnableMouseWheel(true)
+		scrollFrame:SetScript("OnMouseWheel", function(self, delta)
+			thumbSlider:SetValue(thumbSlider:GetValue() - delta * 40)
+		end)
+
+		local function UpdateScrollRange()
+			local visibleHeight = scrollFrame:GetHeight()
+			local contentHeight = scrollChild:GetHeight()
+			local maxScroll = math.max(0, contentHeight - visibleHeight)
+			suppressCallback = true
+			thumbSlider:SetMinMaxValues(0, maxScroll)
+			thumbSlider:SetValue(0)
+			suppressCallback = false
+			scrollFrame:SetVerticalScroll(0)
+			if maxScroll > 0 then
+				track:Show()
+				local ratio = math.min(1, visibleHeight / contentHeight)
+				thumbTex:SetHeight(math.max(20, visibleHeight * ratio))
+			else
+				track:Hide()
+			end
+		end
+
+		return scrollChild, UpdateScrollRange
+	end
+
+	-- Opens Blizzard's color picker with a live-preview callback. Modern
+	-- Retail API confirmed as SetupColorPickerAndShow; falls back to the
+	-- older .func/.previousValues pattern (confirmed still correct as of
+	-- pre-SetupColorPickerAndShow clients) for Classic, where the modern
+	-- method may not exist - same defensive dual-path shape as the rest of
+	-- this addon's Retail/Classic compat layer.
+	local function OpenColorPicker(r, g, b, onChange)
+		if ColorPickerFrame.SetupColorPickerAndShow then
+			ColorPickerFrame:SetupColorPickerAndShow({
+				r = r, g = g, b = b,
+				swatchFunc = function()
+					onChange(ColorPickerFrame:GetColorRGB())
+				end,
+				cancelFunc = function(previousValues)
+					if previousValues then
+						onChange(previousValues.r, previousValues.g, previousValues.b)
+					end
+				end,
+			})
+		else
+			ColorPickerFrame.hasOpacity = false
+			ColorPickerFrame.previousValues = { r, g, b }
+			ColorPickerFrame.func = function()
+				onChange(ColorPickerFrame:GetColorRGB())
+			end
+			ColorPickerFrame.cancelFunc = function(prev)
+				if prev then onChange(prev[1], prev[2], prev[3]) end
+			end
+			ColorPickerFrame:SetColorRGB(r, g, b)
+			ColorPickerFrame:Hide()
+			ColorPickerFrame:Show()
+		end
+	end
+
+	-- A small swatch button showing the current color; click opens the
+	-- picker. dbColorTable is the actual {r,g,b} table in XalsQuestCompassDB
+	-- - mutated in place so callers don't need to re-fetch it.
+	local function AddColorSwatch(parent, anchorTo, dbColorTable, onPicked)
+		local swatch = CreateFrame("Button", nil, parent)
+		PixelUtil.SetSize(swatch, 24, 24)
+		-- Below the checkbox, not beside it - beside it collided with the
+		-- checkbox's own label text (labels run well past the checkbox's
+		-- narrow clickable box), which was breaking the swatch's border.
+		swatch:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 4, -10)
+
+		local fill = swatch:CreateTexture(nil, "BACKGROUND")
+		fill:SetAllPoints()
+		fill:SetColorTexture(dbColorTable[1], dbColorTable[2], dbColorTable[3], 1)
+
+		-- Hand-drawn border, same technique as Brand.MakeButton/Brand.DrawBorder -
+		-- SetBackdrop's 1px edgeFile is the same "renders incomplete/asymmetric
+		-- at non-integer UI scale" bug already fixed for buttons; this swatch
+		-- never got that fix.
+		local thick = Brand.LINE_THICKNESS
+		local top = swatch:CreateTexture(nil, "ARTWORK")
+		PixelUtil.SetPoint(top, "TOPLEFT", swatch, "TOPLEFT", 0, 0)
+		PixelUtil.SetPoint(top, "TOPRIGHT", swatch, "TOPRIGHT", 0, 0)
+		PixelUtil.SetHeight(top, thick)
+		top:SetColorTexture(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1)
+
+		local bottom = swatch:CreateTexture(nil, "ARTWORK")
+		PixelUtil.SetPoint(bottom, "BOTTOMLEFT", swatch, "BOTTOMLEFT", 0, 0)
+		PixelUtil.SetPoint(bottom, "BOTTOMRIGHT", swatch, "BOTTOMRIGHT", 0, 0)
+		PixelUtil.SetHeight(bottom, thick)
+		bottom:SetColorTexture(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1)
+
+		local left = swatch:CreateTexture(nil, "ARTWORK")
+		PixelUtil.SetPoint(left, "TOPLEFT", swatch, "TOPLEFT", 0, 0)
+		PixelUtil.SetPoint(left, "BOTTOMLEFT", swatch, "BOTTOMLEFT", 0, 0)
+		PixelUtil.SetWidth(left, thick)
+		left:SetColorTexture(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1)
+
+		local right = swatch:CreateTexture(nil, "ARTWORK")
+		PixelUtil.SetPoint(right, "TOPRIGHT", swatch, "TOPRIGHT", 0, 0)
+		PixelUtil.SetPoint(right, "BOTTOMRIGHT", swatch, "BOTTOMRIGHT", 0, 0)
+		PixelUtil.SetWidth(right, thick)
+		right:SetColorTexture(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1)
+
+		swatch:SetScript("OnClick", function()
+			OpenColorPicker(dbColorTable[1], dbColorTable[2], dbColorTable[3], function(r, g, b)
+				dbColorTable[1], dbColorTable[2], dbColorTable[3] = r, g, b
+				fill:SetColorTexture(r, g, b, 1)
+				if onPicked then onPicked() end
+			end)
+		end)
+		return swatch
+	end
+
+	----------------------------------------------------------------
+	-- Font panel - same card head (header/shadow/divider/description) as
+	-- the checkbox sections, but the control at the bottom is whatever
+	-- actually fits the setting: dropdown, slider, or checkbox.
+	----------------------------------------------------------------
+	local fontPanel = CreateFrame("Frame", nil, contentArea)
+	fontPanel:SetAllPoints(contentArea)
+	fontPanel:Hide()
+
+	-- Font has enough cards (5, two with color swatches) to run past the
+	-- visible area, so its content is built into a scrollChild instead of
+	-- directly into fontPanel. The other sections fit without scrolling for
+	-- now and are left as plain frames - this pattern is here for reuse the
+	-- moment any of them grow past their own space too.
+	local fontScrollChild, UpdateFontScroll = CreateScrollableSection(fontPanel)
+
+	-- Card 1: Font (dropdown)
+	local fontDesc = AddCardHeader(fontScrollChild, nil, -32, "Font", "Choose the typeface used throughout the quest window.")
+	local fontDropdown = CreateFrame("Frame", "XalsQuestCompassFontDropdown", fontScrollChild, "UIDropDownMenuTemplate")
+	fontDropdown:SetPoint("TOPLEFT", fontDesc, "BOTTOMLEFT", 0, -8)
+	UIDropDownMenu_SetWidth(fontDropdown, 190)
+	local function RefreshFontDropdownText()
+		UIDropDownMenu_SetText(fontDropdown, GetFontOption(XalsQuestCompassDB.fontKey).name)
+	end
+	UIDropDownMenu_Initialize(fontDropdown, function(self, level)
+		for _, opt in ipairs(FONT_OPTIONS) do
+			local info = UIDropDownMenu_CreateInfo()
+			info.text = opt.name
+			info.checked = (XalsQuestCompassDB.fontKey == opt.key)
+			info.func = function()
+				XalsQuestCompassDB.fontKey = opt.key
+				RefreshFontDropdownText()
+				ApplyFontSettings()
+			end
+			UIDropDownMenu_AddButton(info, level)
+		end
+	end)
+
+	-- Card 2: Font Outline (dropdown)
+	local outlineDesc = AddCardHeader(fontScrollChild, fontDropdown, CARD_GAP, "Font Outline", "Choose how the text is outlined, for readability against busy backgrounds.")
+	local outlineDropdown = CreateFrame("Frame", "XalsQuestCompassOutlineDropdown", fontScrollChild, "UIDropDownMenuTemplate")
+	outlineDropdown:SetPoint("TOPLEFT", outlineDesc, "BOTTOMLEFT", 0, -8)
+	UIDropDownMenu_SetWidth(outlineDropdown, 190)
+	local function RefreshOutlineDropdownText()
+		UIDropDownMenu_SetText(outlineDropdown, GetOutlineOption(XalsQuestCompassDB.outlineKey).name)
+	end
+	UIDropDownMenu_Initialize(outlineDropdown, function(self, level)
+		for _, opt in ipairs(OUTLINE_OPTIONS) do
+			local info = UIDropDownMenu_CreateInfo()
+			info.text = opt.name
+			info.checked = (XalsQuestCompassDB.outlineKey == opt.key)
+			info.func = function()
+				XalsQuestCompassDB.outlineKey = opt.key
+				RefreshOutlineDropdownText()
+				ApplyFontSettings()
+			end
+			UIDropDownMenu_AddButton(info, level)
+		end
+	end)
+
+	-- Card 3: Font Size (slider)
+	local sizeDesc = AddCardHeader(fontScrollChild, outlineDropdown, CARD_GAP, "Font Size", "Adjust the size of the text used throughout the quest window.")
+	local sizeSlider = CreateFrame("Slider", "XalsQuestCompassFontSizeSlider", fontScrollChild, "OptionsSliderTemplate")
+	-- OptionsSliderTemplate's own title/value text renders ABOVE the slider's
+	-- top edge, not below - the old -16 gap left no room for it, so it sat
+	-- directly overlapping the description text above and never actually
+	-- appeared (caught 2026-08-11: it was invisible even before this text
+	-- became the live "Font Size: 13" readout, back when it was still the
+	-- static "Font Size" label).
+	sizeSlider:SetPoint("TOPLEFT", sizeDesc, "BOTTOMLEFT", 16, -32)
+	sizeSlider:SetMinMaxValues(10, 22)
+	sizeSlider:SetValueStep(1)
+	sizeSlider:SetObeyStepOnDrag(true)
+	sizeSlider:SetWidth(190)
+	BumpFont(_G[sizeSlider:GetName() .. "Low"], PANEL_LABEL_FONT_SIZE)
+	BumpFont(_G[sizeSlider:GetName() .. "High"], PANEL_LABEL_FONT_SIZE)
+	_G[sizeSlider:GetName() .. "Low"]:SetText("10")
+	_G[sizeSlider:GetName() .. "High"]:SetText("22")
+	-- Own FontString, not the template's built-in "Text" region - that region
+	-- never actually rendered here across two attempts at repositioning it,
+	-- and OptionsSliderTemplate's internals have a documented history of
+	-- shifting/being altered across WoW versions. This one is guaranteed to
+	-- show regardless of what the template does internally.
+	local sizeValueText = fontScrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	sizeValueText:SetPoint("BOTTOM", sizeSlider, "TOP", 0, 4)
+	BumpFont(sizeValueText, PANEL_LABEL_FONT_SIZE)
+	sizeValueText:SetTextColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	local function UpdateSizeSliderText()
+		sizeValueText:SetText("Font Size: " .. (XalsQuestCompassDB.fontSize or 13))
+	end
+	sizeSlider:SetValue(XalsQuestCompassDB.fontSize or 13)
+	UpdateSizeSliderText()
+	sizeSlider:SetScript("OnValueChanged", function(self, value)
+		value = math.floor(value + 0.5)
+		XalsQuestCompassDB.fontSize = value
+		ApplyFontSettings()
+		UpdateSizeSliderText()
+	end)
+
+	-- Card 4: Text Shadow (checkbox + color swatch)
+	local shadowCB, shadowAnchor = AddSettingCard(fontScrollChild, sizeSlider, -36,
+		"Text Shadow", "Adds a subtle drop shadow behind the text for better contrast. Click the swatch to pick a custom shadow color.",
+		XalsQuestCompassDB.fontShadow,
+		function(self)
+			XalsQuestCompassDB.fontShadow = self:GetChecked() and true or false
+			ApplyFontSettings()
+		end)
+	local shadowSwatch = AddColorSwatch(fontScrollChild, shadowCB, XalsQuestCompassDB.shadowColor, ApplyFontSettings)
+
+	-- Card 5: Font Color - a custom color swatch, plus a separate "use
+	-- class color instead" checkbox as an override. Anchored off the swatch
+	-- (not the checkbox) since the swatch now sits below the checkbox and
+	-- is the true bottom of card 4.
+	local fontColorDesc = AddCardHeader(fontScrollChild, shadowSwatch, CARD_GAP, "Font Color",
+		"Pick a custom color for quest titles, or use your own class color instead.")
+
+	local classColorCB = CreateFrame("CheckButton", nil, fontScrollChild, "UICheckButtonTemplate")
+	classColorCB:SetPoint("TOPLEFT", fontColorDesc, "BOTTOMLEFT", -2, -12)
+	BumpFont(classColorCB.Text, PANEL_LABEL_FONT_SIZE)
+	classColorCB.Text:SetText("Use my class color instead")
+	classColorCB:SetChecked(XalsQuestCompassDB.useClassColor)
+	classColorCB:SetScript("OnClick", function(self)
+		XalsQuestCompassDB.useClassColor = self:GetChecked() and true or false
+		RefreshList()
+	end)
+	local fontColorSwatch = AddColorSwatch(fontScrollChild, classColorCB, XalsQuestCompassDB.customFontColor, RefreshList)
+
+	-- Deferred one frame so GetTop()/GetBottom() reflect real, rendered
+	-- positions rather than being measured before layout has actually run -
+	-- this is what makes the scrollbar's overflow detection genuinely
+	-- accurate instead of a guessed content height.
+	fontPanel:SetScript("OnShow", function()
+		shadowCB:SetChecked(XalsQuestCompassDB.fontShadow)
+		classColorCB:SetChecked(XalsQuestCompassDB.useClassColor)
+		sizeSlider:SetValue(XalsQuestCompassDB.fontSize or 13)
+		RefreshFontDropdownText()
+		RefreshOutlineDropdownText()
+		C_Timer.After(0, function()
+			local top = fontScrollChild:GetTop()
+			local bottom = fontColorSwatch:GetBottom()
+			if top and bottom then
+				fontScrollChild:SetHeight(math.max(top - bottom + 24, 1))
+			end
+			UpdateFontScroll()
+		end)
+	end)
+
+	----------------------------------------------------------------
+	-- Display panel - UI Scaling (the "Window Scale" slider, migrated here
+	-- from the old flat native-settings panel) plus ElvUI Skinning (an
+	-- opt-in runtime toggle - see BrandStyle.lua's Brand.GetElvUISkins).
+	-- More cards TBD as they're named.
+	----------------------------------------------------------------
+	local displayPanel = CreateFrame("Frame", nil, contentArea)
+	displayPanel:SetAllPoints(contentArea)
+	displayPanel:Hide()
+
+	local scaleDesc = AddCardHeader(displayPanel, nil, -32, "UI Scaling", "Adjust the size of the whole quest window.")
+	local scaleSlider = CreateFrame("Slider", "XalsQuestCompassDisplayScaleSlider", displayPanel, "OptionsSliderTemplate")
+	scaleSlider:SetPoint("TOPLEFT", scaleDesc, "BOTTOMLEFT", 16, -32)
+	scaleSlider:SetMinMaxValues(0.7, 1.5)
+	scaleSlider:SetValueStep(0.05)
+	scaleSlider:SetObeyStepOnDrag(true)
+	scaleSlider:SetWidth(190)
+	BumpFont(_G[scaleSlider:GetName() .. "Low"], PANEL_LABEL_FONT_SIZE)
+	BumpFont(_G[scaleSlider:GetName() .. "High"], PANEL_LABEL_FONT_SIZE)
+	_G[scaleSlider:GetName() .. "Low"]:SetText("0.7")
+	_G[scaleSlider:GetName() .. "High"]:SetText("1.5")
+	-- Own FontString, not the template's built-in "Text" region - see the
+	-- matching comment on the Font Size slider for why.
+	local scaleValueText = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	scaleValueText:SetPoint("BOTTOM", scaleSlider, "TOP", 0, 4)
+	BumpFont(scaleValueText, PANEL_LABEL_FONT_SIZE)
+	scaleValueText:SetTextColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	local function UpdateDisplayScaleText()
+		scaleValueText:SetText(string.format("Window Scale: %.2f", XalsQuestCompassDB.windowScale or 1.0))
+	end
+	scaleSlider:SetValue(XalsQuestCompassDB.windowScale or 1.0)
+	UpdateDisplayScaleText()
+	scaleSlider:SetScript("OnValueChanged", function(self, value)
+		value = math.floor(value * 20 + 0.5) / 20
+		XalsQuestCompassDB.windowScale = value
+		ApplyFontSettings()
+		UpdateDisplayScaleText()
+	end)
+
+	local elvDesc = AddCardHeader(displayPanel, scaleSlider, CARD_GAP, "ElvUI Skinning (Experimental)",
+		"If you use ElvUI, the main quest window can defer to ElvUI's own look instead of Xal's default style. Requires ElvUI to be installed. Changes apply after /reload. This is new and not widely tested yet - if something looks off with it on, let Xal know.")
+	local elvCB = CreateFrame("CheckButton", nil, displayPanel, "UICheckButtonTemplate")
+	elvCB:SetPoint("TOPLEFT", elvDesc, "BOTTOMLEFT", -2, -12)
+	BumpFont(elvCB.Text, PANEL_LABEL_FONT_SIZE)
+	elvCB.Text:SetText("Enable ElvUI Skinning (Experimental)")
+	elvCB:SetChecked(XalsQuestCompassDB.elvuiSkinning)
+	elvCB:SetScript("OnClick", function(self)
+		XalsQuestCompassDB.elvuiSkinning = self:GetChecked() and true or false
+		print("|cff33ff99Xal's Quest Compass:|r ElvUI Skinning " .. (XalsQuestCompassDB.elvuiSkinning and "enabled" or "disabled") .. " - /reload to apply.")
+	end)
+
+	displayPanel:SetScript("OnShow", function()
+		scaleSlider:SetValue(XalsQuestCompassDB.windowScale or 1.0)
+		UpdateDisplayScaleText()
+		elvCB:SetChecked(XalsQuestCompassDB.elvuiSkinning)
+	end)
+
+	----------------------------------------------------------------
+	-- Sidebar tabs - every section has real content now.
+	----------------------------------------------------------------
+	local SECTION_NAMES = { "Home", "Behavior", "Automation", "Font", "Display" }
+	local sectionPanels = { homePanel, behaviorPanel, automationPanel, fontPanel, displayPanel }
+	local tabs = {}
+
+	local function ShowSection(index)
+		for i, tab in ipairs(tabs) do
+			tab:SetSelected(i == index)
+		end
+		for i, p in ipairs(sectionPanels) do
+			if p then
+				if i == index then p:Show() else p:Hide() end
+			end
+		end
+	end
+
+	local TAB_SIDE_PAD = 8
+	local anchorTab = nil
+	for i, name in ipairs(SECTION_NAMES) do
+		local tab = Brand.MakeButton(sidebar, name, 116, 24, function() ShowSection(i) end)
+		tab:ClearAllPoints()
+		if anchorTab then
+			PixelUtil.SetPoint(tab, "TOPLEFT", anchorTab, "BOTTOMLEFT", 0, -4)
+		else
+			-- Buffer below the sidebar frame's own top (which sits right at
+			-- the header divider) - only the button moves, not the divider
+			-- or the sidebar frame itself.
+			PixelUtil.SetPoint(tab, "TOPLEFT", sidebar, "TOPLEFT", TAB_SIDE_PAD, -32)
+		end
+		tabs[i] = tab
+		anchorTab = tab
+	end
+	ShowSection(1)
+
+	----------------------------------------------------------------
+	-- Footer: version + branding, fixed at the bottom of the whole window
+	-- regardless of which section is showing.
+	----------------------------------------------------------------
+	local function GetInstalledVersion()
+		local v
+		if C_AddOns and C_AddOns.GetAddOnMetadata then
+			v = C_AddOns.GetAddOnMetadata("XalsQuestCompass", "Version")
+		elseif _G.GetAddOnMetadata then
+			v = _G.GetAddOnMetadata("XalsQuestCompass", "Version")
+		end
+		if v == "@project-version@" then return "dev" end
+		return v or "dev"
+	end
+
+	local installedVersion = GetInstalledVersion()
+	local versionLabel = (installedVersion == "dev") and "dev build" or ("v" .. installedVersion)
+	local footerText = Brand.FS(f, versionLabel .. "  \194\183  by Xal  \194\183  A Xal's Creation",
+		"Fonts\\ARIALN.TTF", 11, "", Brand.GOLD[1], Brand.GOLD[2], Brand.GOLD[3])
+	-- Centered within the CONTENT area's span (divider to right border), not
+	-- the whole window - centering across the full width read off-center
+	-- once the sidebar was added, since the sidebar isn't part of this span.
+	footerText:SetPoint("BOTTOMLEFT", vDivider, "BOTTOMRIGHT", 12, Brand.SAFE_MARGIN)
+	footerText:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -Brand.SAFE_MARGIN, Brand.SAFE_MARGIN)
+	footerText:SetJustifyH("CENTER")
+
+	f:Hide()
+	standaloneFrame = f
+	return f
+end
+
 local function OpenOptionsPanel()
-	if Settings and Settings.OpenToCategory and optionsPanel and optionsPanel.settingsCategoryID then
-		Settings.OpenToCategory(optionsPanel.settingsCategoryID)
-		Settings.OpenToCategory(optionsPanel.settingsCategoryID)
-	elseif InterfaceOptionsFrame_OpenToCategory and optionsPanel then
-		InterfaceOptionsFrame_OpenToCategory(optionsPanel)
-		InterfaceOptionsFrame_OpenToCategory(optionsPanel)
+	local f = BuildStandaloneOptionsWindow()
+	if f:IsShown() then
+		f:Hide()
+	else
+		f:Show()
+	end
+end
+XQC.OpenOptions = OpenOptionsPanel
+
+-- Exposed for MinimapButton.lua's left-click (LibDataBroker has no direct
+-- access to the QTT local, same reason OpenOptions is exposed above).
+function XQC.ToggleWindow()
+	if not QTT then return end
+	if QTT:IsShown() then
+		QTT:Hide()
+	else
+		QTT:Show()
 	end
 end
 
@@ -1420,15 +2287,19 @@ local function CreateMainFrame()
 		XalsQuestCompassDB.point = { point, relPoint, x, y }
 	end)
 
-	-- Clean, semi-transparent dark panel with a thin gold border --
-	-- closer to the native tracker's feel than a stone dialog frame.
-	QTT:SetBackdrop({
-		bgFile = "Interface\\Buttons\\WHITE8x8",
-		edgeFile = "Interface\\Buttons\\WHITE8x8",
-		edgeSize = 1,
-	})
-	QTT:SetBackdropColor(0.04, 0.04, 0.06, 0.85)
-	QTT:SetBackdropBorderColor(1, 0.82, 0, 0.6)
+	-- Branded chrome: opaque near-black background, pixel-snapped accent-gold
+	-- border - same look as every other Xal's addon. If ElvUI Skinning is on
+	-- and ElvUI is installed, defer to ElvUI's own template instead - a
+	-- runtime toggle, not a replacement: the brand chrome above is what
+	-- still renders the instant the setting is off or ElvUI isn't present.
+	local Brand = XQC.BrandStyle
+	local elvS = Brand.GetElvUISkins()
+	if elvS then
+		QTT:SetTemplate("Transparent")
+	else
+		Brand.ApplyBackground(QTT)
+		Brand.DrawBorder(QTT)
+	end
 
 	QTT:SetFrameStrata("MEDIUM")
 	QTT:Hide()
@@ -1436,7 +2307,7 @@ local function CreateMainFrame()
 	-- Header icon + title
 	QTT.icon = QTT:CreateTexture(nil, "ARTWORK")
 	QTT.icon:SetSize(20, 20)
-	QTT.icon:SetPoint("TOPLEFT", 14, -12)
+	QTT.icon:SetPoint("TOPLEFT", Brand.SAFE_MARGIN, -Brand.SAFE_MARGIN)
 	QTT.icon:SetTexture("Interface\\AddOns\\" .. ADDON_NAME .. "\\Icon.png")
 	QTT.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 
@@ -1447,10 +2318,8 @@ local function CreateMainFrame()
 	QTT.title:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
 
 	-- Close button
-	QTT.closeBtn = CreateFrame("Button", nil, QTT, "UIPanelCloseButton")
-	QTT.closeBtn:SetSize(24, 24)
-	QTT.closeBtn:SetPoint("TOPRIGHT", -2, -2)
-	QTT.closeBtn:SetScript("OnClick", function() QTT:Hide() end)
+	QTT.closeBtn = Brand.MakeButton(QTT, "X", 24, 24, function() QTT:Hide() end)
+	PixelUtil.SetPoint(QTT.closeBtn, "TOPRIGHT", QTT, "TOPRIGHT", -Brand.SAFE_MARGIN, -Brand.SAFE_MARGIN)
 
 	-- Options (gear) button
 	QTT.optionsBtn = CreateFrame("Button", nil, QTT)
@@ -1512,8 +2381,8 @@ local function CreateMainFrame()
 
 	-- Scroll frame + child
 	local scrollFrame = CreateFrame("ScrollFrame", "XalsQuestCompassScrollFrame", QTT, "UIPanelScrollFrameTemplate")
-	scrollFrame:SetPoint("TOPLEFT", 12, -66)
-	scrollFrame:SetPoint("BOTTOMRIGHT", -30, 66)
+	scrollFrame:SetPoint("TOPLEFT", Brand.SAFE_MARGIN, -66)
+	scrollFrame:SetPoint("BOTTOMRIGHT", -30, 82)
 	QTT.scrollFrame = scrollFrame
 
 	-- Resize grip -- always available, drag it directly to resize
@@ -1547,14 +2416,20 @@ local function CreateMainFrame()
 
 	-- Footer divider
 	local footerDivider = CreateDivider(QTT)
-	footerDivider:SetPoint("BOTTOMLEFT", 14, 58)
-	footerDivider:SetPoint("BOTTOMRIGHT", -14, 58)
+	footerDivider:SetPoint("BOTTOMLEFT", Brand.SAFE_MARGIN, 74)
+	footerDivider:SetPoint("BOTTOMRIGHT", -Brand.SAFE_MARGIN, 74)
 
+	-- Footer is 2 stacked rows: Navigate to Nearest on top, and Track All /
+	-- Route All / Untrack All sharing the bottom row. A 10px gap between rows
+	-- keeps their borders from touching/overlapping.
 	-- Route All -- computes a multi-stop route through every ready quest and
-	-- starts walking it. While a route is active this row swaps to a
-	-- Stop X/Y readout plus Skip/Cancel instead of showing the button.
+	-- starts walking it. Shares the bottom row with Track All/Untrack All
+	-- while idle; while a route is active this slot swaps to a Stop X/Y
+	-- readout plus Skip/Cancel, which is too wide to fit alongside Track
+	-- All/Untrack All, so those two hide for the duration of the route
+	-- (see UpdateRouteFooter).
 	local routeAllBtn = CreateTextButton(QTT)
-	routeAllBtn:SetPoint("BOTTOM", 0, 38)
+	routeAllBtn:SetPoint("BOTTOM", 0, Brand.SAFE_MARGIN)
 	routeAllBtn:SetLabel("Route All", GOLD)
 	routeAllBtn:SetScript("OnClick", function()
 		StartRoute()
@@ -1562,7 +2437,7 @@ local function CreateMainFrame()
 	QTT.routeAllBtn = routeAllBtn
 
 	local routeStatusText = QTT:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	routeStatusText:SetPoint("BOTTOM", 0, 41)
+	routeStatusText:SetPoint("BOTTOM", 0, Brand.SAFE_MARGIN + 3)
 	routeStatusText:SetTextColor(GREEN[1], GREEN[2], GREEN[3])
 	routeStatusText:Hide()
 	QTT.routeStatusText = routeStatusText
@@ -1587,7 +2462,7 @@ local function CreateMainFrame()
 
 	-- Footer actions, styled as clickable text links
 	local navNearestBtn = CreateTextButton(QTT)
-	navNearestBtn:SetPoint("BOTTOM", 0, 18)
+	navNearestBtn:SetPoint("BOTTOM", 0, 44)
 	navNearestBtn:SetLabel("Navigate to Nearest", GOLD)
 	navNearestBtn:SetScript("OnClick", function()
 		local quests = GetTurnInQuests()
@@ -1600,7 +2475,7 @@ local function CreateMainFrame()
 	end)
 
 	local trackAllBtn = CreateTextButton(QTT)
-	trackAllBtn:SetPoint("BOTTOMLEFT", 16, 6)
+	trackAllBtn:SetPoint("BOTTOMLEFT", Brand.SAFE_MARGIN, Brand.SAFE_MARGIN)
 	trackAllBtn:SetLabel("Track All", LIGHT_BLUE)
 	trackAllBtn:SetScript("OnClick", function()
 		for _, info in ipairs(GetTurnInQuests()) do
@@ -1608,9 +2483,10 @@ local function CreateMainFrame()
 		end
 		RefreshList()
 	end)
+	QTT.trackAllBtn = trackAllBtn
 
 	local untrackAllBtn = CreateTextButton(QTT)
-	untrackAllBtn:SetPoint("BOTTOMRIGHT", -22, 6)
+	untrackAllBtn:SetPoint("BOTTOMRIGHT", -22, Brand.SAFE_MARGIN)
 	untrackAllBtn:SetLabel("Untrack All", GREY)
 	untrackAllBtn:SetScript("OnClick", function()
 		for _, info in ipairs(GetTurnInQuests()) do
@@ -1618,6 +2494,7 @@ local function CreateMainFrame()
 		end
 		RefreshList()
 	end)
+	QTT.untrackAllBtn = untrackAllBtn
 
 	QTT:SetScript("OnShow", function()
 		RefreshList()
@@ -1641,79 +2518,9 @@ local function CreateMainFrame()
 	QTT:SetScript("OnSizeChanged", OnWindowResized)
 end
 
--------------------------------------------------
--- Minimap button
--------------------------------------------------
-
-local function CreateMinimapButton()
-	local btn = CreateFrame("Button", "XalsQuestCompassMinimapButton", Minimap)
-	minimapButton = btn
-	btn:SetSize(31, 31)
-	btn:SetFrameStrata("MEDIUM")
-	btn:SetFrameLevel(8)
-	btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-	btn:RegisterForDrag("LeftButton")
-
-	local icon = btn:CreateTexture(nil, "BACKGROUND")
-	icon:SetTexture("Interface\\AddOns\\" .. ADDON_NAME .. "\\Icon.png")
-	icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-	icon:SetSize(20, 20)
-	icon:SetPoint("CENTER", 0, 1)
-
-	local border = btn:CreateTexture(nil, "OVERLAY")
-	border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
-	border:SetSize(54, 54)
-	border:SetPoint("TOPLEFT")
-
-	btn:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
-
-	local function UpdatePosition()
-		local angle = math.rad(XalsQuestCompassDB.minimapAngle or 200)
-		local x, y = math.cos(angle) * 80, math.sin(angle) * 80
-		btn:ClearAllPoints()
-		btn:SetPoint("CENTER", Minimap, "CENTER", x, y)
-	end
-
-	btn:SetScript("OnDragStart", function(self)
-		self:SetScript("OnUpdate", function()
-			local mx, my = Minimap:GetCenter()
-			local px, py = GetCursorPosition()
-			local scale = Minimap:GetEffectiveScale()
-			px, py = px / scale, py / scale
-			local angle = math.deg(math.atan2(py - my, px - mx))
-			XalsQuestCompassDB.minimapAngle = angle
-			UpdatePosition()
-		end)
-	end)
-	btn:SetScript("OnDragStop", function(self)
-		self:SetScript("OnUpdate", nil)
-	end)
-
-	btn:SetScript("OnClick", function(self, mouseButton)
-		if mouseButton == "RightButton" then
-			OpenOptionsPanel()
-			return
-		end
-		if QTT:IsShown() then
-			QTT:Hide()
-		else
-			QTT:Show()
-		end
-	end)
-
-	btn:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-		GameTooltip:AddLine("Xal's Quest Compass")
-		GameTooltip:AddLine("Left-click: toggle the quest list", 1, 1, 1)
-		GameTooltip:AddLine("Right-click: open settings", 1, 1, 1)
-		GameTooltip:AddLine("Drag: move this button", 0.8, 0.8, 0.8)
-		GameTooltip:Show()
-	end)
-	btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-	UpdatePosition()
-	btn:SetShown(not XalsQuestCompassDB.minimapHidden)
-end
+-- Minimap button now lives in MinimapButton.lua (LibDataBroker + LibDBIcon,
+-- same pattern as Routes/Courier) - see that file. XQC.ToggleWindow/
+-- XQC.OpenOptions above are what it calls back into.
 
 -------------------------------------------------
 -- Automation (auto turn-in / auto accept)
@@ -1881,7 +2688,17 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
 			-- Each step runs even if an earlier one fails, so one broken
 			-- piece can never silently stop the rest (or the login message)
 			-- from happening.
-			local steps = { InitDB, ApplyFontSettings, CreateMainFrame, CreateMinimapButton, CreateOptionsPanel }
+			local function RegisterMinimapButton()
+				if XQC.MinimapButton and XQC.MinimapButton.Register then
+					XQC.MinimapButton:Register()
+				end
+			end
+			local function ShowWhatsNew()
+				if XQC.WhatsNew and XQC.WhatsNew.CheckAndShow then
+					XQC.WhatsNew:CheckAndShow()
+				end
+			end
+			local steps = { InitDB, ApplyFontSettings, CreateMainFrame, RegisterMinimapButton, CreateOptionsPanel, ShowWhatsNew }
 			for _, step in ipairs(steps) do
 				local ok, err = pcall(step)
 				if not ok then
