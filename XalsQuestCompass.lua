@@ -145,6 +145,7 @@ local FONT_OPTIONS = {
 	{ key = "SKURRI", name = "Skurri", path = "Fonts\\SKURRI.TTF" },
 	{ key = "MORPHEUS", name = "Morpheus", path = "Fonts\\MORPHEUS.TTF" },
 	{ key = "CUSTOM", name = "Simply Sans Bold", path = "Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\CustomFont.ttf" },
+	{ key = "FIRASANS", name = "Fira Sans Medium", path = "Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf" },
 }
 
 local OUTLINE_OPTIONS = {
@@ -192,6 +193,7 @@ local defaults = {
 	useClassColor = false,
 	customFontColor = { 1, 0.82, 0 },
 	elvuiSkinning = false,
+	fadeWhenEmpty = true,
 	windowScale = 0.7,
 	autoTurnIn = false,
 	autoAccept = false,
@@ -217,13 +219,14 @@ local ROW_WIDTH = 328 -- fallback used before the frame exists
 local lastReadyCount = 0
 local lastReadyCountAll = 0
 local currentNavQuestID = nil -- which quest we're currently pointing the player toward
+local currentDisplayIndex = 1 -- which ready quest (1 = closest) is currently shown in the single-quest display
 local UpdateRouteFooter -- forward-declared; assigned in the Route planning section, called from RefreshList
 
--- Row width tracks the actual visible scroll area, so resizing the
+-- Row width tracks the actual visible quest display area, so resizing the
 -- window never clips row content again.
 local function GetRowWidth()
-	if QTT and QTT.scrollFrame then
-		return QTT.scrollFrame:GetWidth()
+	if QTT and QTT.questArea then
+		return QTT.questArea:GetWidth()
 	end
 	return ROW_WIDTH
 end
@@ -263,7 +266,6 @@ local function ApplyFontSettings()
 	smallFontObj:SetShadowColor(sc[1], sc[2], sc[3], XalsQuestCompassDB.fontShadow and 1 or 0)
 
 	if QTT then
-		if QTT.title then QTT.title:SetFontObject(titleFontObj) end
 		QTT:SetScale(XalsQuestCompassDB.windowScale or 1.0)
 	end
 end
@@ -329,7 +331,9 @@ local function FormatDistance(info)
 	elseif info.ttt_distSq ~= nil and not info.ttt_onContinent then
 		return "far away"
 	end
-	return ""
+	-- No distance data at all (some quests, e.g. campaign/story quests,
+	-- don't expose one) - "Nearby" beats leaving the line blank.
+	return "Nearby"
 end
 
 -- Appends "what you'll get" lines to a tooltip for a quest sitting in the log,
@@ -450,10 +454,27 @@ local function GetTurnInQuests(forceAllZones)
 	local zoneOnly = not forceAllZones and XalsQuestCompassDB.currentZoneOnly
 	local playerMapID = C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
 
+	-- The quest log itself groups every entry under a zone/category header
+	-- row (isHeader = true, title = the zone/category name) - usually a more
+	-- reliable zone source than GetQuestWaypointCoords (which can come back
+	-- nil for quests with no on-map turn-in location). Some quests (campaign/
+	-- story quests especially) don't sit under a normal zone header at all
+	-- though, so fall back to the player's own current zone - a ready-to-
+	-- turn-in quest is almost always right where you're already standing.
+	local currentHeaderName = nil
+	local playerZoneName = nil
+	if playerMapID then
+		local playerMapInfo = C_Map.GetMapInfo(playerMapID)
+		playerZoneName = playerMapInfo and playerMapInfo.name
+	end
+
 	for i = 1, numEntries do
 		local questID, title, isHeader, isHidden = Compat_GetQuestEntry(i)
+		if isHeader then
+			currentHeaderName = title
+		end
 		if questID and not isHeader and not isHidden and questID > 0 and Compat_IsComplete(questID) then
-			local info = { questID = questID, title = title }
+			local info = { questID = questID, title = title, zoneName = currentHeaderName or playerZoneName }
 
 			if IS_CLASSIC then
 				-- Only quests in the player's current zone get location data at
@@ -552,6 +573,8 @@ local CONTROL_GAP = 4
 local CONTROL_LINE_HEIGHT = 16
 local BOTTOM_PADDING = 6
 local MIN_ROW_HEIGHT = 36
+local QUEST_AREA_TOP = 76 -- distance from QTT's top to questArea's top
+local QUEST_AREA_BOTTOM = 44 -- distance from QTT's bottom to questArea's bottom (room for the chevron/route status strip)
 
 local function CreateRow(parent, index)
 	local row = CreateFrame("Frame", nil, parent)
@@ -571,35 +594,10 @@ local function CreateRow(parent, index)
 	hoverBg:Hide()
 	row.hoverBg = hoverBg
 
-	-- Ready indicator
-	local icon = row:CreateTexture(nil, "ARTWORK")
-	icon:SetSize(14, 14)
-	icon:SetPoint("TOPLEFT", 2, -5)
-	icon:SetTexture("Interface\\RaidFrame\\ReadyCheck-Ready")
-	row.icon = icon
-
-	-- Quest title -- now wraps onto a second line instead of clipping
-	local title = row:CreateFontString(nil, "OVERLAY")
-	title:SetFontObject(titleFontObj)
-	title:SetPoint("TOPLEFT", icon, "TOPRIGHT", 5, 2)
-	title:SetPoint("RIGHT", -4, 0)
-	title:SetJustifyH("LEFT")
-	title:SetWordWrap(true)
-	title:SetMaxLines(2)
-	title:SetTextColor(GetDefaultTitleColor())
-	row.title = title
-
-	-- Distance -- anchored below the title so it follows it whether the
-	-- title took one line or two
-	local distText = row:CreateFontString(nil, "OVERLAY")
-	distText:SetFontObject(smallFontObj)
-	distText:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -CONTROL_GAP)
-	distText:SetTextColor(LIGHT_BLUE[1], LIGHT_BLUE[2], LIGHT_BLUE[3])
-	row.distText = distText
-
-	-- Navigate control -- same line as distance, right-aligned
-	local navBtn = CreateTextButton(row)
-	navBtn:SetPoint("TOPRIGHT", title, "BOTTOMRIGHT", 0, -CONTROL_GAP)
+	-- Track/Navigate sit on the title's own line, top right - not their own
+	-- line further down. No ready-check icon; the confirmed mockup has none.
+	local navBtn = XQC.BrandStyle.MakeLinkButton(row)
+	navBtn:SetPoint("TOPRIGHT", row, "TOPRIGHT", -4, -2)
 	navBtn:SetScript("OnClick", function(self)
 		local parentRow = self:GetParent()
 		if not parentRow.questID then return end
@@ -607,8 +605,7 @@ local function CreateRow(parent, index)
 	end)
 	row.navBtn = navBtn
 
-	-- Track (objective-tracker watch) control, just left of Navigate
-	local trackBtn = CreateTextButton(row)
+	local trackBtn = XQC.BrandStyle.MakeLinkButton(row)
 	trackBtn:SetPoint("TOPRIGHT", navBtn, "TOPLEFT", -8, 0)
 	trackBtn:SetScript("OnClick", function(self)
 		local parentRow = self:GetParent()
@@ -622,11 +619,33 @@ local function CreateRow(parent, index)
 	end)
 	row.trackBtn = trackBtn
 
-	-- Divider under the row
-	local divider = CreateDivider(row)
-	divider:SetPoint("BOTTOMLEFT", 2, 0)
-	divider:SetPoint("BOTTOMRIGHT", -2, 0)
-	divider:SetColorTexture(1, 1, 1, 0.06)
+	-- Quest title -- wraps onto a second line instead of clipping, stopping
+	-- short of Track/Navigate so long titles don't run under them.
+	local title = row:CreateFontString(nil, "OVERLAY")
+	title:SetFontObject(titleFontObj)
+	title:SetPoint("TOPLEFT", 0, -2)
+	title:SetPoint("RIGHT", trackBtn, "LEFT", -8, 0)
+	title:SetJustifyH("LEFT")
+	title:SetWordWrap(true)
+	title:SetMaxLines(2)
+	title:SetTextColor(GetDefaultTitleColor())
+	row.title = title
+
+	-- Zone name, bracketed, directly under the title - its own line, left
+	-- only, nothing anchored off its right edge anymore.
+	local zoneText = row:CreateFontString(nil, "OVERLAY")
+	zoneText:SetFontObject(smallFontObj)
+	zoneText:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -2)
+	zoneText:SetJustifyH("LEFT")
+	zoneText:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
+	row.zoneText = zoneText
+
+	-- Distance -- its own line below the zone name.
+	local distText = row:CreateFontString(nil, "OVERLAY")
+	distText:SetFontObject(smallFontObj)
+	distText:SetPoint("TOPLEFT", zoneText, "BOTTOMLEFT", 0, -CONTROL_GAP)
+	distText:SetTextColor(LIGHT_BLUE[1], LIGHT_BLUE[2], LIGHT_BLUE[3])
+	row.distText = distText
 
 	row:SetScript("OnEnter", function(self)
 		self.hoverBg:Show()
@@ -651,25 +670,35 @@ end
 local function UpdateRow(row, info)
 	row.questID = info.questID
 	row.title:SetText(info.title or "Unknown Quest")
+	row.zoneText:SetText(info.zoneName and ("[" .. info.zoneName .. "]") or "")
 	row.distText:SetText(FormatDistance(info))
 
 	local watchType = Compat_GetQuestWatchType(info.questID)
-	if watchType then
+	local isTracked = watchType and true or false
+	if isTracked then
 		row.trackBtn:SetLabel("Tracking", GREEN)
 	else
 		row.trackBtn:SetLabel("Track", GREY)
 	end
 
-	if currentNavQuestID and currentNavQuestID == info.questID then
-		row.title:SetTextColor(GREEN[1], GREEN[2], GREEN[3])
+	local isNavigating = currentNavQuestID and currentNavQuestID == info.questID
+	if isNavigating then
 		row.navBtn:SetLabel("Navigating", GREEN)
 	else
-		row.title:SetTextColor(GetDefaultTitleColor())
 		row.navBtn:SetLabel("Navigate", GOLD)
 	end
 
+	-- Title turns green whenever the quest is tracked or being navigated to
+	-- - either one counts as "you're actively on this quest."
+	if isTracked or isNavigating then
+		row.title:SetTextColor(GREEN[1], GREEN[2], GREEN[3])
+	else
+		row.title:SetTextColor(GetDefaultTitleColor())
+	end
+
 	local titleHeight = row.title:GetStringHeight() or 16
-	local rowHeight = math.max(MIN_ROW_HEIGHT, TOP_PADDING + titleHeight + CONTROL_GAP + CONTROL_LINE_HEIGHT + BOTTOM_PADDING)
+	local zoneHeight = row.zoneText:GetStringHeight() or 12
+	local rowHeight = TOP_PADDING + titleHeight + 2 + zoneHeight + CONTROL_GAP + CONTROL_LINE_HEIGHT + BOTTOM_PADDING
 	row:SetHeight(rowHeight)
 
 	row:Show()
@@ -681,11 +710,11 @@ end
 -------------------------------------------------
 
 local function RefreshList()
-	-- scrollChild is one of the last elements built in CreateMainFrame,
+	-- questArea is one of the last elements built in CreateMainFrame,
 	-- so checking for it confirms the window actually finished
 	-- constructing -- guards against any code path that fires this
 	-- mid-build (e.g. a size-recalculation triggered by SetBackdrop).
-	if not QTT or not QTT.scrollChild then return end
+	if not QTT or not QTT.questArea then return end
 
 	if UpdateRouteFooter then UpdateRouteFooter() end
 
@@ -710,36 +739,70 @@ local function RefreshList()
 		end
 	end
 
+	-- New quests re-sort by distance every refresh, so clamp the display
+	-- cursor back onto the list instead of carrying over a stale index.
+	if #quests ~= lastReadyCount then
+		currentDisplayIndex = 1
+	end
 	lastReadyCount = #quests
 
 	if not QTT:IsShown() then return end
 
+	-- Fade When Empty: window goes fully invisible and click-through when
+	-- there's nothing ready, snapping back the instant a quest becomes
+	-- ready - not just dimmed, genuinely gone, per explicit request.
+	-- EnableMouse(false) matters here too: SetAlpha(0) alone still leaves
+	-- an invisible clickable dead zone over that part of the screen.
+	if XalsQuestCompassDB.fadeWhenEmpty and #quests == 0 then
+		QTT:SetAlpha(0)
+		QTT:EnableMouse(false)
+	else
+		QTT:SetAlpha(1)
+		QTT:EnableMouse(true)
+	end
+
 	QTT.noQuestsText:SetShown(#quests == 0)
-	QTT.countText:SetText(
-		string.format("%d quest%s ready to turn in", #quests, (#quests == 1) and "" or "s")
-	)
 
-	local yOffset = 0
+	if #quests == 0 then
+		QTT.countText:SetText("")
+		if rows[1] then rows[1]:Hide() end
+		QTT:SetHeight(QUEST_AREA_TOP + 70 + QUEST_AREA_BOTTOM)
+		return
+	end
+
+	if currentDisplayIndex > #quests then currentDisplayIndex = #quests end
+	if currentDisplayIndex < 1 then currentDisplayIndex = 1 end
+
+	-- Merged "1 / 5 ready to turn in" line, with a dimmer scroll hint
+	-- tacked on only when there's actually something else to scroll to.
+	local headerText = string.format("%d / %d ready to turn in", currentDisplayIndex, #quests)
+	if #quests > 1 then
+		headerText = headerText .. "  |cffaaaaaa(scroll to browse)|r"
+	end
+	QTT.countText:SetText(headerText)
+
 	local rowWidth = GetRowWidth()
-	for i, info in ipairs(quests) do
-		local row = rows[i]
-		if not row then
-			row = CreateRow(QTT.scrollChild, i)
-			rows[i] = row
-		end
-		row:SetWidth(rowWidth)
-		local rowHeight = UpdateRow(row, info)
-		row:ClearAllPoints()
-		row:SetPoint("TOPLEFT", 0, -yOffset)
-		yOffset = yOffset + rowHeight
+	local row = rows[1]
+	if not row then
+		row = CreateRow(QTT.questArea, 1)
+		row:SetScript("OnMouseWheel", function(self, delta)
+			if delta < 0 then
+				currentDisplayIndex = currentDisplayIndex + 1
+			else
+				currentDisplayIndex = currentDisplayIndex - 1
+			end
+			RefreshList()
+		end)
+		rows[1] = row
 	end
+	row:SetWidth(rowWidth)
+	local rowHeight = UpdateRow(row, quests[currentDisplayIndex])
+	row:ClearAllPoints()
+	row:SetPoint("TOPLEFT", 0, 0)
 
-	for i = #quests + 1, #rows do
-		rows[i]:Hide()
-		rows[i].questID = nil
-	end
-
-	QTT.scrollChild:SetSize(rowWidth, math.max(1, yOffset))
+	-- Window hugs its content - one quest is a fixed, small shape, so there's
+	-- no reason to leave it sized for a scrolling list that no longer exists.
+	QTT:SetHeight(QUEST_AREA_TOP + rowHeight + QUEST_AREA_BOTTOM)
 end
 
 -- Keeps existing rows and the scroll child in sync with the window's
@@ -930,17 +993,11 @@ function UpdateRouteFooter()
 		QTT.routeAllBtn:Hide()
 		QTT.routeSkipBtn:Show()
 		QTT.routeCancelBtn:Show()
-		-- Stop X/Y + Skip + Cancel is too wide to share the bottom row with
-		-- Track All/Untrack All, so those hide for the duration of the route.
-		if QTT.trackAllBtn then QTT.trackAllBtn:Hide() end
-		if QTT.untrackAllBtn then QTT.untrackAllBtn:Hide() end
 	else
 		QTT.routeStatusText:Hide()
 		QTT.routeSkipBtn:Hide()
 		QTT.routeCancelBtn:Hide()
 		QTT.routeAllBtn:Show()
-		if QTT.trackAllBtn then QTT.trackAllBtn:Show() end
-		if QTT.untrackAllBtn then QTT.untrackAllBtn:Show() end
 	end
 end
 
@@ -1134,6 +1191,16 @@ end
 -- rather than assuming a starting size.
 local PANEL_DESC_FONT_SIZE = 15 -- baseline bumped from 13 -> 15, matching the Home page body text
 local PANEL_LABEL_FONT_SIZE = 14
+-- The left margin for the first element in any card chain (a header or a
+-- leading button like Behavior's "Open Window"). NEVER anchor a first
+-- element at x=0 - a panel can end up wrapped in a scrollable ScrollFrame
+-- (see CreateScrollableSection) at any point, now or later, and x=0 sits
+-- exactly flush against that frame's clip edge, silently clipping the left
+-- edge off every line of text chained beneath it. This bit Font's Size
+-- slider, then Behavior's entire card list, both from the same root cause
+-- - a shared named constant instead of a bare "8"/"0" typed by hand at
+-- each call site is what actually stops it from recurring a third time.
+local CARD_LEFT_MARGIN = 8
 local function BumpFont(fs, size)
 	local font, _, flags = fs:GetFont()
 	fs:SetFont(font, size, flags)
@@ -1178,6 +1245,26 @@ local function CreateOptionsPanel()
 		fs:SetPoint("RIGHT", panel, "RIGHT", x, 0)
 	end
 
+	-- Brand.MakeCheckbox has no built-in .Text region (unlike native
+	-- UICheckButtonTemplate), so this centralizes the label-creation
+	-- boilerplate that would otherwise get retyped at every checkbox in
+	-- this panel. Anchoring is left to the caller (offsets vary per site),
+	-- this only builds the checkbox + its label and wires state/toggle.
+	local function MakeCheckboxWithLabel(text, isChecked, onToggle)
+		local cb = Brand.MakeCheckbox(scrollChild, 22)
+		local label = scrollChild:CreateFontString(nil, "OVERLAY")
+		label:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_LABEL_FONT_SIZE, "")
+		label:SetTextColor(0.85, 0.85, 0.85)
+		label:SetPoint("LEFT", cb, "RIGHT", 6, 0)
+		AnchorRight(label, -30)
+		label:SetJustifyH("LEFT")
+		label:SetWordWrap(true)
+		label:SetText(text)
+		cb:SetChecked(isChecked)
+		cb.OnToggle = onToggle
+		return cb
+	end
+
 	-- In-content button (not header chrome - Routes' header is title + close
 	-- only) since this panel is reused both natively and in the standalone
 	-- window, and only Quest Compass needs this control at all.
@@ -1199,57 +1286,51 @@ local function CreateOptionsPanel()
 	BumpFont(subtitle, PANEL_DESC_FONT_SIZE)
 	subtitle:SetText("Toggle the quest window with /xqc or the minimap button. Click Navigate on any quest for an on-screen arrow.")
 
-	local autoShowCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
+	local autoShowCB = MakeCheckboxWithLabel(
+		"Automatically open the window when a quest becomes ready to turn in",
+		XalsQuestCompassDB.autoShow,
+		function(self) XalsQuestCompassDB.autoShow = self:GetChecked() and true or false end)
 	autoShowCB:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", -2, -24)
-	AnchorRight(autoShowCB.Text, -30)
-	autoShowCB.Text:SetWordWrap(true)
-	BumpFont(autoShowCB.Text, PANEL_LABEL_FONT_SIZE)
-	autoShowCB.Text:SetText("Automatically open the window when a quest becomes ready to turn in")
-	autoShowCB:SetChecked(XalsQuestCompassDB.autoShow)
-	autoShowCB:SetScript("OnClick", function(self)
-		XalsQuestCompassDB.autoShow = self:GetChecked() and true or false
-	end)
 	panel.autoShowCB = autoShowCB
 
-	local autoNavCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
+	local autoNavCB = MakeCheckboxWithLabel(
+		"Automatically point the arrow at the nearest turn-in when none is selected",
+		XalsQuestCompassDB.autoNavigateNearest,
+		function(self) XalsQuestCompassDB.autoNavigateNearest = self:GetChecked() and true or false end)
 	autoNavCB:SetPoint("TOPLEFT", autoShowCB, "BOTTOMLEFT", 0, -8)
-	AnchorRight(autoNavCB.Text, -30)
-	autoNavCB.Text:SetWordWrap(true)
-	BumpFont(autoNavCB.Text, PANEL_LABEL_FONT_SIZE)
-	autoNavCB.Text:SetText("Automatically point the arrow at the nearest turn-in when none is selected")
-	autoNavCB:SetChecked(XalsQuestCompassDB.autoNavigateNearest)
-	autoNavCB:SetScript("OnClick", function(self)
-		XalsQuestCompassDB.autoNavigateNearest = self:GetChecked() and true or false
-	end)
 	panel.autoNavCB = autoNavCB
 
-	local zoneOnlyCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
+	local zoneOnlyCB = MakeCheckboxWithLabel(
+		"Only show quests ready to turn in within my current zone",
+		XalsQuestCompassDB.currentZoneOnly,
+		function(self)
+			XalsQuestCompassDB.currentZoneOnly = self:GetChecked() and true or false
+			if QTT and QTT.zoneToggleBtn then QTT.zoneToggleBtn:UpdateText() end
+			RefreshList()
+		end)
 	zoneOnlyCB:SetPoint("TOPLEFT", autoNavCB, "BOTTOMLEFT", 0, -8)
-	AnchorRight(zoneOnlyCB.Text, -30)
-	zoneOnlyCB.Text:SetWordWrap(true)
-	BumpFont(zoneOnlyCB.Text, PANEL_LABEL_FONT_SIZE)
-	zoneOnlyCB.Text:SetText("Only show quests ready to turn in within my current zone")
-	zoneOnlyCB:SetChecked(XalsQuestCompassDB.currentZoneOnly)
-	zoneOnlyCB:SetScript("OnClick", function(self)
-		XalsQuestCompassDB.currentZoneOnly = self:GetChecked() and true or false
-		if QTT and QTT.zoneToggleBtn then QTT.zoneToggleBtn:UpdateText() end
-		RefreshList()
-	end)
 	panel.zoneOnlyCB = zoneOnlyCB
 
-	local minimapCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
+	local minimapCB = MakeCheckboxWithLabel(
+		"Show minimap button",
+		not (XalsQuestCompassDB.minimap and XalsQuestCompassDB.minimap.hide),
+		function(self)
+			if XQC.MinimapButton and XQC.MinimapButton.SetShown then
+				XQC.MinimapButton:SetShown(self:GetChecked())
+			end
+		end)
 	minimapCB:SetPoint("TOPLEFT", zoneOnlyCB, "BOTTOMLEFT", 0, -8)
-	AnchorRight(minimapCB.Text, -30)
-	minimapCB.Text:SetWordWrap(true)
-	BumpFont(minimapCB.Text, PANEL_LABEL_FONT_SIZE)
-	minimapCB.Text:SetText("Show minimap button")
-	minimapCB:SetChecked(not (XalsQuestCompassDB.minimap and XalsQuestCompassDB.minimap.hide))
-	minimapCB:SetScript("OnClick", function(self)
-		if XQC.MinimapButton and XQC.MinimapButton.SetShown then
-			XQC.MinimapButton:SetShown(self:GetChecked())
-		end
-	end)
 	panel.minimapCB = minimapCB
+
+	local fadeCB = MakeCheckboxWithLabel(
+		"Fade window when nothing's ready to turn in",
+		XalsQuestCompassDB.fadeWhenEmpty,
+		function(self)
+			XalsQuestCompassDB.fadeWhenEmpty = self:GetChecked() and true or false
+			RefreshList()
+		end)
+	fadeCB:SetPoint("TOPLEFT", minimapCB, "BOTTOMLEFT", 0, -8)
+	panel.fadeCB = fadeCB
 
 	-- Automation section
 	local automationTitle = Brand.FS(scrollChild, "Automation", "Fonts\\FRIZQT__.TTF", 16, "",
@@ -1259,28 +1340,18 @@ local function CreateOptionsPanel()
 	automationDivider:SetPoint("TOPLEFT", automationTitle, "BOTTOMLEFT", 0, -6)
 	automationDivider:SetPoint("RIGHT", scrollChild, "RIGHT", -2, 0)
 
-	local autoTurnInCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
+	local autoTurnInCB = MakeCheckboxWithLabel(
+		"Automatically turn in quests with no reward choice to make",
+		XalsQuestCompassDB.autoTurnIn,
+		function(self) XalsQuestCompassDB.autoTurnIn = self:GetChecked() and true or false end)
 	autoTurnInCB:SetPoint("TOPLEFT", automationTitle, "BOTTOMLEFT", -2, -22)
-	AnchorRight(autoTurnInCB.Text, -30)
-	autoTurnInCB.Text:SetWordWrap(true)
-	BumpFont(autoTurnInCB.Text, PANEL_LABEL_FONT_SIZE)
-	autoTurnInCB.Text:SetText("Automatically turn in quests with no reward choice to make")
-	autoTurnInCB:SetChecked(XalsQuestCompassDB.autoTurnIn)
-	autoTurnInCB:SetScript("OnClick", function(self)
-		XalsQuestCompassDB.autoTurnIn = self:GetChecked() and true or false
-	end)
 	panel.autoTurnInCB = autoTurnInCB
 
-	local autoAcceptCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
+	local autoAcceptCB = MakeCheckboxWithLabel(
+		"Automatically accept new quests offered by NPCs",
+		XalsQuestCompassDB.autoAccept,
+		function(self) XalsQuestCompassDB.autoAccept = self:GetChecked() and true or false end)
 	autoAcceptCB:SetPoint("TOPLEFT", autoTurnInCB, "BOTTOMLEFT", 0, -8)
-	AnchorRight(autoAcceptCB.Text, -30)
-	autoAcceptCB.Text:SetWordWrap(true)
-	BumpFont(autoAcceptCB.Text, PANEL_LABEL_FONT_SIZE)
-	autoAcceptCB.Text:SetText("Automatically accept new quests offered by NPCs")
-	autoAcceptCB:SetChecked(XalsQuestCompassDB.autoAccept)
-	autoAcceptCB:SetScript("OnClick", function(self)
-		XalsQuestCompassDB.autoAccept = self:GetChecked() and true or false
-	end)
 	panel.autoAcceptCB = autoAcceptCB
 
 	local automationNote = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
@@ -1291,16 +1362,11 @@ local function CreateOptionsPanel()
 	BumpFont(automationNote, PANEL_DESC_FONT_SIZE)
 	automationNote:SetText("Skips quests with more than one reward to choose from, quests that cost money to turn in, and a few quest types known to behave oddly (escort, item-start, PvP-flagged) - those still open normally so you can handle them yourself. Hold Shift to pause automation at any time.")
 
-	local readySoundCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
+	local readySoundCB = MakeCheckboxWithLabel(
+		"Play a sound when a quest becomes ready to turn in",
+		XalsQuestCompassDB.readySound,
+		function(self) XalsQuestCompassDB.readySound = self:GetChecked() and true or false end)
 	readySoundCB:SetPoint("TOPLEFT", automationNote, "BOTTOMLEFT", -24, -10)
-	AnchorRight(readySoundCB.Text, -30)
-	readySoundCB.Text:SetWordWrap(true)
-	BumpFont(readySoundCB.Text, PANEL_LABEL_FONT_SIZE)
-	readySoundCB.Text:SetText("Play a sound when a quest becomes ready to turn in")
-	readySoundCB:SetChecked(XalsQuestCompassDB.readySound)
-	readySoundCB:SetScript("OnClick", function(self)
-		XalsQuestCompassDB.readySound = self:GetChecked() and true or false
-	end)
 	panel.readySoundCB = readySoundCB
 
 	-- Appearance section
@@ -1399,30 +1465,24 @@ local function CreateOptionsPanel()
 	panel.sizeSlider = sizeSlider
 	panel.UpdateSizeSliderText = UpdateSizeSliderText
 
-	local shadowCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
+	local shadowCB = MakeCheckboxWithLabel(
+		"Text shadow",
+		XalsQuestCompassDB.fontShadow,
+		function(self)
+			XalsQuestCompassDB.fontShadow = self:GetChecked() and true or false
+			ApplyFontSettings()
+		end)
 	shadowCB:SetPoint("TOPLEFT", sizeSlider, "BOTTOMLEFT", -16, -30)
-	AnchorRight(shadowCB.Text, -30)
-	shadowCB.Text:SetWordWrap(true)
-	BumpFont(shadowCB.Text, PANEL_LABEL_FONT_SIZE)
-	shadowCB.Text:SetText("Text shadow")
-	shadowCB:SetChecked(XalsQuestCompassDB.fontShadow)
-	shadowCB:SetScript("OnClick", function(self)
-		XalsQuestCompassDB.fontShadow = self:GetChecked() and true or false
-		ApplyFontSettings()
-	end)
 	panel.shadowCB = shadowCB
 
-	local classColorCB = CreateFrame("CheckButton", nil, scrollChild, "UICheckButtonTemplate")
+	local classColorCB = MakeCheckboxWithLabel(
+		"Use my class color for quest titles",
+		XalsQuestCompassDB.useClassColor,
+		function(self)
+			XalsQuestCompassDB.useClassColor = self:GetChecked() and true or false
+			RefreshList()
+		end)
 	classColorCB:SetPoint("TOPLEFT", shadowCB, "BOTTOMLEFT", 0, -8)
-	AnchorRight(classColorCB.Text, -30)
-	classColorCB.Text:SetWordWrap(true)
-	BumpFont(classColorCB.Text, PANEL_LABEL_FONT_SIZE)
-	classColorCB.Text:SetText("Use my class color for quest titles")
-	classColorCB:SetChecked(XalsQuestCompassDB.useClassColor)
-	classColorCB:SetScript("OnClick", function(self)
-		XalsQuestCompassDB.useClassColor = self:GetChecked() and true or false
-		RefreshList()
-	end)
 	panel.classColorCB = classColorCB
 
 	local scaleSlider = CreateFrame("Slider", "XalsQuestCompassScaleSlider", scrollChild, "OptionsSliderTemplate")
@@ -1522,13 +1582,40 @@ local function BuildStandaloneOptionsWindow()
 	local f = CreateFrame("Frame", "XalsQuestCompassStandaloneOptions", UIParent, "BackdropTemplate")
 	tinsert(UISpecialFrames, "XalsQuestCompassStandaloneOptions")
 	f:SetSize(FW, FH)
-	f:SetPoint("CENTER")
+	-- Default offset from true dead-center, not (0,0) - a plain CENTER
+	-- default is exactly where other addons' windows tend to land too
+	-- (confirmed 2026-08-13: this window was caught stacked directly on top
+	-- of Roster Roundup's Guild Roster). Only used the FIRST time this opens
+	-- though - once dragged, its real position is remembered permanently
+	-- (XalsQuestCompassDB.optionsWindowPoint), same as every mature addon's
+	-- window (ElvUI, Zygor, etc.) - a collision can only ever happen once
+	-- before the player moves it and it's fixed for good.
+	-- This window is 724x820 - too large for a small offset from CENTER to
+	-- meaningfully separate it from another addon's similarly large window
+	-- (confirmed 2026-08-13: it was still overlapping Craft Courier's
+	-- 840x700 Options canvas with only ~170px of offset between them).
+	-- Anchors to a screen CORNER instead - genuine separation regardless of
+	-- window size, not offset math these dimensions defeat.
+	local savedPoint = XalsQuestCompassDB.optionsWindowPoint
+	if savedPoint then
+		f:SetPoint(savedPoint[1], UIParent, savedPoint[2], savedPoint[3], savedPoint[4])
+	else
+		f:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 40, -40)
+	end
 	f:SetFrameStrata("DIALOG")
+	-- Raises itself above other frames sharing this strata the instant it's
+	-- shown/clicked - the real, standard Blizzard API every established
+	-- addon (confirmed against Zygor's own windows) uses for this.
+	f:SetToplevel(true)
 	f:SetMovable(true)
 	f:EnableMouse(true)
 	f:RegisterForDrag("LeftButton")
 	f:SetScript("OnDragStart", f.StartMoving)
-	f:SetScript("OnDragStop", f.StopMovingOrSizing)
+	f:SetScript("OnDragStop", function(self)
+		self:StopMovingOrSizing()
+		local point, _, relPoint, x, y = self:GetPoint()
+		XalsQuestCompassDB.optionsWindowPoint = { point, relPoint, x, y }
+	end)
 	f:SetClampedToScreen(true)
 
 	Brand.ApplyBackground(f)
@@ -1536,7 +1623,7 @@ local function BuildStandaloneOptionsWindow()
 	-- Roughly centered between the top border (~8px) and the header divider
 	-- (now 80px) - best estimate accounting for the title+shadow's visual
 	-- height, not a precise measurement, may need a small nudge once seen live.
-	Brand.Title(f, "Xal's Quest Compass", 32, "TOP", f, "TOP", 0, -20)
+	Brand.Title(f, "Xal's Quest Compass", 40, "TOP", f, "TOP", 0, -20)
 
 	-- Header is title + close button ONLY, matching Routes' actual standalone
 	-- window exactly - no other controls up there.
@@ -1617,7 +1704,7 @@ local function BuildStandaloneOptionsWindow()
 	local homeBody1 = Brand.FS(homePanel,
 		"Quests pile up complete in your log and it's easy to lose track of which ones are actually ready to hand in. I built this addon to fix exactly that - a clean list of what's ready, sorted by distance, with one click to "
 			.. Highlight("navigate") .. " and one click to " .. Highlight("track") .. ".",
-		"Fonts\\ARIALN.TTF", 15, "", 0.85, 0.85, 0.85)
+		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 15, "", 0.85, 0.85, 0.85)
 	homeBody1:SetPoint("TOP", homeRule, "BOTTOM", 0, -18)
 	homeBody1:SetWidth(BODY_WIDTH)
 	homeBody1:SetJustifyH("CENTER")
@@ -1625,7 +1712,7 @@ local function BuildStandaloneOptionsWindow()
 
 	local homeBody2 = Brand.FS(homePanel,
 		Highlight("Route All") .. " takes it further: one button plans a route through everything you're ready to turn in and walks you through it, stop by stop.",
-		"Fonts\\ARIALN.TTF", 15, "", 0.85, 0.85, 0.85)
+		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 15, "", 0.85, 0.85, 0.85)
 	homeBody2:SetPoint("TOP", homeBody1, "BOTTOM", 0, -14)
 	homeBody2:SetWidth(BODY_WIDTH)
 	homeBody2:SetJustifyH("CENTER")
@@ -1633,7 +1720,7 @@ local function BuildStandaloneOptionsWindow()
 
 	local homeBody3 = Brand.FS(homePanel,
 		"Everything else in this window is where you make it yours.",
-		"Fonts\\ARIALN.TTF", 15, "", 0.85, 0.85, 0.85)
+		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 15, "", 0.85, 0.85, 0.85)
 	homeBody3:SetPoint("TOP", homeBody2, "BOTTOM", 0, -14)
 	homeBody3:SetWidth(BODY_WIDTH)
 	homeBody3:SetJustifyH("CENTER")
@@ -1669,8 +1756,8 @@ local function BuildStandaloneOptionsWindow()
 		-- Shadow layer first (same duplicate-offset technique Brand.Title
 		-- uses), then the real header on top - left-justified, confirmed
 		-- 2026-08-11 after an A/B test against centered.
-		local headerShadow = Brand.FS(parent, name, "Fonts\\MORPHEUS.TTF", 24, "OUTLINE", 0, 0, 0)
-		local header = Brand.FS(parent, name, "Fonts\\MORPHEUS.TTF", 24, "OUTLINE",
+		local headerShadow = Brand.FS(parent, name, "Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\CustomFont.ttf", 24, "OUTLINE", 0, 0, 0)
+		local header = Brand.FS(parent, name, "Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\CustomFont.ttf", 24, "OUTLINE",
 			Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
 		if anchorTo then
 			header:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, gap)
@@ -1678,11 +1765,7 @@ local function BuildStandaloneOptionsWindow()
 			-- gap doubles as the top-of-panel buffer here (Behavior's first
 			-- card gets this for free via openWindowBtn sitting above it;
 			-- a panel with no leading button needs it passed explicitly).
-			-- x=8, not 0: a real left margin so nothing in the chain below
-			-- (every other card anchors relative to this one) sits flush
-			-- against a scrollable section's clip edge - that flush-left fit
-			-- was what clipped the Font Size slider's Low label.
-			header:SetPoint("TOPLEFT", parent, "TOPLEFT", 8, gap)
+			header:SetPoint("TOPLEFT", parent, "TOPLEFT", CARD_LEFT_MARGIN, gap)
 		end
 		headerShadow:SetPoint("TOPLEFT", header, "TOPLEFT", 4, -4)
 
@@ -1690,7 +1773,7 @@ local function BuildStandaloneOptionsWindow()
 		divider:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -6)
 		divider:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
 
-		local desc = Brand.FS(parent, description, "Fonts\\ARIALN.TTF", PANEL_DESC_FONT_SIZE, "", 0.85, 0.85, 0.85)
+		local desc = Brand.FS(parent, description, "Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_DESC_FONT_SIZE, "", 0.85, 0.85, 0.85)
 		desc:SetPoint("TOPLEFT", divider, "BOTTOMLEFT", 0, -16)
 		desc:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
 		desc:SetJustifyH("LEFT")
@@ -1705,96 +1788,18 @@ local function BuildStandaloneOptionsWindow()
 	local function AddSettingCard(parent, anchorTo, gap, name, description, isChecked, onClick)
 		local desc = AddCardHeader(parent, anchorTo, gap, name, description)
 
-		local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
+		local cb = Brand.MakeCheckbox(parent, 22)
 		cb:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", -2, -12)
-		BumpFont(cb.Text, PANEL_LABEL_FONT_SIZE)
-		cb.Text:SetText("Enabled")
+		local label = parent:CreateFontString(nil, "OVERLAY")
+		label:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_LABEL_FONT_SIZE, "")
+		label:SetTextColor(0.95, 0.60, 0.10)
+		label:SetPoint("LEFT", cb, "RIGHT", 6, 0)
+		label:SetText("Enabled")
 		cb:SetChecked(isChecked)
-		cb:SetScript("OnClick", onClick)
+		cb.OnToggle = onClick
 
 		return cb, cb
 	end
-
-	local openWindowBtn = Brand.MakeButton(behaviorPanel, "Open Window", 140, 24, function()
-		if QTT then
-			QTT:Show()
-		else
-			print("|cffff4444Xal's Quest Compass:|r the window didn't initialize. Try /reload.")
-		end
-	end)
-	openWindowBtn:SetPoint("TOPLEFT", behaviorPanel, "TOPLEFT", 0, -32)
-
-	local CARD_GAP = -28
-
-	local autoShowCB, anchor1 = AddSettingCard(behaviorPanel, openWindowBtn, CARD_GAP,
-		"Auto-Show", "Opens the window automatically the moment a quest becomes ready.",
-		XalsQuestCompassDB.autoShow,
-		function(self) XalsQuestCompassDB.autoShow = self:GetChecked() and true or false end)
-
-	local autoNavCB, anchor2 = AddSettingCard(behaviorPanel, anchor1, CARD_GAP,
-		"Auto-Navigate", "Points the arrow at the nearest turn-in when nothing else is selected.",
-		XalsQuestCompassDB.autoNavigateNearest,
-		function(self) XalsQuestCompassDB.autoNavigateNearest = self:GetChecked() and true or false end)
-
-	local zoneOnlyCB, anchor3 = AddSettingCard(behaviorPanel, anchor2, CARD_GAP,
-		"Zone Filter", "Only shows quests ready to turn in within your current zone.",
-		XalsQuestCompassDB.currentZoneOnly,
-		function(self)
-			XalsQuestCompassDB.currentZoneOnly = self:GetChecked() and true or false
-			if QTT and QTT.zoneToggleBtn then QTT.zoneToggleBtn:UpdateText() end
-			RefreshList()
-		end)
-
-	local minimapCB, anchor4 = AddSettingCard(behaviorPanel, anchor3, CARD_GAP,
-		"Minimap Button", "Shows the clickable icon on your minimap.",
-		not (XalsQuestCompassDB.minimap and XalsQuestCompassDB.minimap.hide),
-		function(self)
-			if XQC.MinimapButton and XQC.MinimapButton.SetShown then
-				XQC.MinimapButton:SetShown(self:GetChecked())
-			end
-		end)
-
-	behaviorPanel:SetScript("OnShow", function()
-		autoShowCB:SetChecked(XalsQuestCompassDB.autoShow)
-		autoNavCB:SetChecked(XalsQuestCompassDB.autoNavigateNearest)
-		zoneOnlyCB:SetChecked(XalsQuestCompassDB.currentZoneOnly)
-		minimapCB:SetChecked(not (XalsQuestCompassDB.minimap and XalsQuestCompassDB.minimap.hide))
-	end)
-
-	----------------------------------------------------------------
-	-- Automation panel - every safety guarantee stated explicitly and
-	-- completely in each card's own description, not summarized away or
-	-- left to a shared footnote, so there's no way to misread what either
-	-- toggle will or won't do. Both automation cards independently restate
-	-- the Shift-to-pause behavior for the same reason.
-	----------------------------------------------------------------
-	local automationPanel = CreateFrame("Frame", nil, contentArea)
-	automationPanel:SetAllPoints(contentArea)
-	automationPanel:Hide()
-
-	local autoTurnInCB, autoTurnInAnchor = AddSettingCard(automationPanel, nil, -32,
-		"Auto Turn-In",
-		"Completes quests automatically, but only when there's nothing to choose - any quest with more than one reward option, or one that costs you money, is always left for you to finish yourself. Hold Shift at any time to pause it instantly.",
-		XalsQuestCompassDB.autoTurnIn,
-		function(self) XalsQuestCompassDB.autoTurnIn = self:GetChecked() and true or false end)
-
-	local autoAcceptCB, autoAcceptAnchor = AddSettingCard(automationPanel, autoTurnInAnchor, CARD_GAP,
-		"Auto Accept",
-		"Accepts new quests from NPCs automatically. Escort, item-start, and PvP-flagged quests are always skipped and left for you, since they need special handling. Hold Shift at any time to pause it instantly.",
-		XalsQuestCompassDB.autoAccept,
-		function(self) XalsQuestCompassDB.autoAccept = self:GetChecked() and true or false end)
-
-	local readySoundCB, readySoundAnchor = AddSettingCard(automationPanel, autoAcceptAnchor, CARD_GAP,
-		"Ready Sound",
-		"Plays a short chime the moment a quest becomes ready to turn in.",
-		XalsQuestCompassDB.readySound,
-		function(self) XalsQuestCompassDB.readySound = self:GetChecked() and true or false end)
-
-	automationPanel:SetScript("OnShow", function()
-		autoTurnInCB:SetChecked(XalsQuestCompassDB.autoTurnIn)
-		autoAcceptCB:SetChecked(XalsQuestCompassDB.autoAccept)
-		readySoundCB:SetChecked(XalsQuestCompassDB.readySound)
-	end)
 
 	-- Wraps a content-building region in a scrollable area with a custom
 	-- thin scrollbar in the addon's own flat brand style - a native Slider
@@ -1806,7 +1811,11 @@ local function BuildStandaloneOptionsWindow()
 	-- isn't reachable from an in-game addon at all. Auto-hides when content
 	-- fits without scrolling. Returns the scrollChild to build content into,
 	-- and an UpdateScrollRange() function to call once content is built (and
-	-- sized) so the scrollbar knows whether it's actually needed.
+	-- sized) so the scrollbar knows whether it's actually needed. Defined
+	-- here (before ANY panel is built) so every section can use it, not
+	-- just whichever one happened to need it first - a card added later to
+	-- a panel that was never wrapped in this is exactly what overflowed
+	-- Behavior's footer buffer (caught 2026-08-11).
 	local function CreateScrollableSection(parent)
 		local scrollFrame = CreateFrame("ScrollFrame", nil, parent)
 		scrollFrame:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, 0)
@@ -1873,6 +1882,115 @@ local function BuildStandaloneOptionsWindow()
 
 		return scrollChild, UpdateScrollRange
 	end
+
+	-- Behavior now has 5 cards - outgrew the visible area the moment Fade
+	-- When Empty was added, so it's wrapped in the same scrollable pattern
+	-- Font already uses (caught live 2026-08-11: the 5th card ran straight
+	-- into the footer buffer with no scrollbar to catch it).
+	local behaviorScrollChild, UpdateBehaviorScroll = CreateScrollableSection(behaviorPanel)
+
+	local openWindowBtn = Brand.MakeButton(behaviorScrollChild, "Open Window", 140, 24, function()
+		if QTT then
+			QTT:Show()
+		else
+			print("|cffff4444Xal's Quest Compass:|r the window didn't initialize. Try /reload.")
+		end
+	end)
+	-- Every card below chains its x-position off this button, so it needs
+	-- the same CARD_LEFT_MARGIN baseline AddCardHeader uses - leaving it at
+	-- x=0 cut the left edge off every single card's text underneath it
+	-- (caught 2026-08-11 via screenshot: "pens the window..." missing its
+	-- leading "O", etc.).
+	openWindowBtn:SetPoint("TOPLEFT", behaviorScrollChild, "TOPLEFT", CARD_LEFT_MARGIN, -32)
+
+	local CARD_GAP = -28
+
+	local autoShowCB, anchor1 = AddSettingCard(behaviorScrollChild, openWindowBtn, CARD_GAP,
+		"Auto-Show", "Opens the window automatically the moment a quest becomes ready.",
+		XalsQuestCompassDB.autoShow,
+		function(self) XalsQuestCompassDB.autoShow = self:GetChecked() and true or false end)
+
+	local autoNavCB, anchor2 = AddSettingCard(behaviorScrollChild, anchor1, CARD_GAP,
+		"Auto-Navigate", "Points the arrow at the nearest turn-in when nothing else is selected.",
+		XalsQuestCompassDB.autoNavigateNearest,
+		function(self) XalsQuestCompassDB.autoNavigateNearest = self:GetChecked() and true or false end)
+
+	local zoneOnlyCB, anchor3 = AddSettingCard(behaviorScrollChild, anchor2, CARD_GAP,
+		"Zone Filter", "Only shows quests ready to turn in within your current zone.",
+		XalsQuestCompassDB.currentZoneOnly,
+		function(self)
+			XalsQuestCompassDB.currentZoneOnly = self:GetChecked() and true or false
+			if QTT and QTT.zoneToggleBtn then QTT.zoneToggleBtn:UpdateText() end
+			RefreshList()
+		end)
+
+	local minimapCB, anchor4 = AddSettingCard(behaviorScrollChild, anchor3, CARD_GAP,
+		"Minimap Button", "Shows the clickable icon on your minimap.",
+		not (XalsQuestCompassDB.minimap and XalsQuestCompassDB.minimap.hide),
+		function(self)
+			if XQC.MinimapButton and XQC.MinimapButton.SetShown then
+				XQC.MinimapButton:SetShown(self:GetChecked())
+			end
+		end)
+
+	local fadeCB, anchor5 = AddSettingCard(behaviorScrollChild, anchor4, CARD_GAP,
+		"Fade When Empty", "Makes the window fully invisible and click-through whenever nothing's ready to turn in, instead of sitting there empty. Snaps back the instant a quest becomes ready.",
+		XalsQuestCompassDB.fadeWhenEmpty,
+		function(self)
+			XalsQuestCompassDB.fadeWhenEmpty = self:GetChecked() and true or false
+			RefreshList()
+		end)
+
+	behaviorPanel:SetScript("OnShow", function()
+		autoShowCB:SetChecked(XalsQuestCompassDB.autoShow)
+		autoNavCB:SetChecked(XalsQuestCompassDB.autoNavigateNearest)
+		zoneOnlyCB:SetChecked(XalsQuestCompassDB.currentZoneOnly)
+		minimapCB:SetChecked(not (XalsQuestCompassDB.minimap and XalsQuestCompassDB.minimap.hide))
+		fadeCB:SetChecked(XalsQuestCompassDB.fadeWhenEmpty)
+		C_Timer.After(0, function()
+			local top = behaviorScrollChild:GetTop()
+			local bottom = fadeCB:GetBottom()
+			if top and bottom then
+				behaviorScrollChild:SetHeight(math.max(top - bottom + 24, 1))
+			end
+			UpdateBehaviorScroll()
+		end)
+	end)
+
+	----------------------------------------------------------------
+	-- Automation panel - every safety guarantee stated explicitly and
+	-- completely in each card's own description, not summarized away or
+	-- left to a shared footnote, so there's no way to misread what either
+	-- toggle will or won't do. Both automation cards independently restate
+	-- the Shift-to-pause behavior for the same reason.
+	----------------------------------------------------------------
+	local automationPanel = CreateFrame("Frame", nil, contentArea)
+	automationPanel:SetAllPoints(contentArea)
+	automationPanel:Hide()
+
+	local autoTurnInCB, autoTurnInAnchor = AddSettingCard(automationPanel, nil, -32,
+		"Auto Turn-In",
+		"Completes quests automatically, but only when there's nothing to choose - any quest with more than one reward option, or one that costs you money, is always left for you to finish yourself. Hold Shift at any time to pause it instantly.",
+		XalsQuestCompassDB.autoTurnIn,
+		function(self) XalsQuestCompassDB.autoTurnIn = self:GetChecked() and true or false end)
+
+	local autoAcceptCB, autoAcceptAnchor = AddSettingCard(automationPanel, autoTurnInAnchor, CARD_GAP,
+		"Auto Accept",
+		"Accepts new quests from NPCs automatically. Escort, item-start, and PvP-flagged quests are always skipped and left for you, since they need special handling. Hold Shift at any time to pause it instantly.",
+		XalsQuestCompassDB.autoAccept,
+		function(self) XalsQuestCompassDB.autoAccept = self:GetChecked() and true or false end)
+
+	local readySoundCB, readySoundAnchor = AddSettingCard(automationPanel, autoAcceptAnchor, CARD_GAP,
+		"Ready Sound",
+		"Plays a short chime the moment a quest becomes ready to turn in.",
+		XalsQuestCompassDB.readySound,
+		function(self) XalsQuestCompassDB.readySound = self:GetChecked() and true or false end)
+
+	automationPanel:SetScript("OnShow", function()
+		autoTurnInCB:SetChecked(XalsQuestCompassDB.autoTurnIn)
+		autoAcceptCB:SetChecked(XalsQuestCompassDB.autoAccept)
+		readySoundCB:SetChecked(XalsQuestCompassDB.readySound)
+	end)
 
 	-- Opens Blizzard's color picker with a live-preview callback. Modern
 	-- Retail API confirmed as SetupColorPickerAndShow; falls back to the
@@ -1959,6 +2077,16 @@ local function BuildStandaloneOptionsWindow()
 				if onPicked then onPicked() end
 			end)
 		end)
+
+		-- The swatch alone doesn't explain itself - a plain colored square
+		-- with no label reads as decoration, not a control (caught
+		-- 2026-08-13 via screenshot).
+		local swatchLabel = parent:CreateFontString(nil, "OVERLAY")
+		swatchLabel:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_LABEL_FONT_SIZE, "")
+		swatchLabel:SetTextColor(0.85, 0.85, 0.85)
+		swatchLabel:SetPoint("LEFT", swatch, "RIGHT", 8, 0)
+		swatchLabel:SetText("Current color - click to change")
+
 		return swatch
 	end
 
@@ -2078,15 +2206,18 @@ local function BuildStandaloneOptionsWindow()
 	local fontColorDesc = AddCardHeader(fontScrollChild, shadowSwatch, CARD_GAP, "Font Color",
 		"Pick a custom color for quest titles, or use your own class color instead.")
 
-	local classColorCB = CreateFrame("CheckButton", nil, fontScrollChild, "UICheckButtonTemplate")
+	local classColorCB = Brand.MakeCheckbox(fontScrollChild, 22)
 	classColorCB:SetPoint("TOPLEFT", fontColorDesc, "BOTTOMLEFT", -2, -12)
-	BumpFont(classColorCB.Text, PANEL_LABEL_FONT_SIZE)
-	classColorCB.Text:SetText("Use my class color instead")
+	local classColorLabel = fontScrollChild:CreateFontString(nil, "OVERLAY")
+	classColorLabel:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_LABEL_FONT_SIZE, "")
+	classColorLabel:SetTextColor(0.95, 0.60, 0.10)
+	classColorLabel:SetPoint("LEFT", classColorCB, "RIGHT", 6, 0)
+	classColorLabel:SetText("Use my class color instead")
 	classColorCB:SetChecked(XalsQuestCompassDB.useClassColor)
-	classColorCB:SetScript("OnClick", function(self)
+	classColorCB.OnToggle = function(self)
 		XalsQuestCompassDB.useClassColor = self:GetChecked() and true or false
 		RefreshList()
-	end)
+	end
 	local fontColorSwatch = AddColorSwatch(fontScrollChild, classColorCB, XalsQuestCompassDB.customFontColor, RefreshList)
 
 	-- Deferred one frame so GetTop()/GetBottom() reflect real, rendered
@@ -2150,20 +2281,43 @@ local function BuildStandaloneOptionsWindow()
 
 	local elvDesc = AddCardHeader(displayPanel, scaleSlider, CARD_GAP, "ElvUI Skinning (Experimental)",
 		"If you use ElvUI, the main quest window can defer to ElvUI's own look instead of Xal's default style. Requires ElvUI to be installed. Changes apply after /reload. This is new and not widely tested yet - if something looks off with it on, let Xal know.")
-	local elvCB = CreateFrame("CheckButton", nil, displayPanel, "UICheckButtonTemplate")
+	local elvCB = Brand.MakeCheckbox(displayPanel, 22)
 	elvCB:SetPoint("TOPLEFT", elvDesc, "BOTTOMLEFT", -2, -12)
-	BumpFont(elvCB.Text, PANEL_LABEL_FONT_SIZE)
-	elvCB.Text:SetText("Enable ElvUI Skinning (Experimental)")
+	local elvLabel = displayPanel:CreateFontString(nil, "OVERLAY")
+	elvLabel:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_LABEL_FONT_SIZE, "")
+	elvLabel:SetTextColor(0.95, 0.60, 0.10)
+	elvLabel:SetPoint("LEFT", elvCB, "RIGHT", 6, 0)
+	elvLabel:SetText("Enable ElvUI Skinning (Experimental)")
 	elvCB:SetChecked(XalsQuestCompassDB.elvuiSkinning)
-	elvCB:SetScript("OnClick", function(self)
+	elvCB.OnToggle = function(self)
 		XalsQuestCompassDB.elvuiSkinning = self:GetChecked() and true or false
 		print("|cff33ff99Xal's Quest Compass:|r ElvUI Skinning " .. (XalsQuestCompassDB.elvuiSkinning and "enabled" or "disabled") .. " - /reload to apply.")
-	end)
+	end
+
+	local ELV_DESC_BASE = "If you use ElvUI, the main quest window can defer to ElvUI's own look instead of Xal's default style. Requires ElvUI to be installed. Changes apply after /reload. This is new and not widely tested yet - if something looks off with it on, let Xal know."
+	-- Grayed out and unclickable when ElvUI isn't actually installed - a
+	-- normal-looking, clickable toggle that silently does nothing reads as
+	-- broken rather than inert (caught 2026-08-13).
+	local function UpdateElvCBAvailability()
+		if Brand.IsElvUIAvailable() then
+			elvCB:EnableMouse(true)
+			elvCB:SetAlpha(1)
+			elvLabel:SetAlpha(1)
+			elvDesc:SetText(ELV_DESC_BASE)
+		else
+			elvCB:EnableMouse(false)
+			elvCB:SetAlpha(0.4)
+			elvLabel:SetAlpha(0.4)
+			elvDesc:SetText(ELV_DESC_BASE .. " |cffff4444ElvUI not detected.|r")
+		end
+	end
+	UpdateElvCBAvailability()
 
 	displayPanel:SetScript("OnShow", function()
 		scaleSlider:SetValue(XalsQuestCompassDB.windowScale or 1.0)
 		UpdateDisplayScaleText()
 		elvCB:SetChecked(XalsQuestCompassDB.elvuiSkinning)
+		UpdateElvCBAvailability()
 	end)
 
 	----------------------------------------------------------------
@@ -2220,7 +2374,7 @@ local function BuildStandaloneOptionsWindow()
 	local installedVersion = GetInstalledVersion()
 	local versionLabel = (installedVersion == "dev") and "dev build" or ("v" .. installedVersion)
 	local footerText = Brand.FS(f, versionLabel .. "  \194\183  by Xal  \194\183  A Xal's Creation",
-		"Fonts\\ARIALN.TTF", 11, "", Brand.GOLD[1], Brand.GOLD[2], Brand.GOLD[3])
+		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 11, "", Brand.GOLD[1], Brand.GOLD[2], Brand.GOLD[3])
 	-- Centered within the CONTENT area's span (divider to right border), not
 	-- the whole window - centering across the full width read off-center
 	-- once the sidebar was added, since the sidebar isn't part of this span.
@@ -2259,19 +2413,18 @@ end
 -------------------------------------------------
 
 local function CreateMainFrame()
+	-- Height is computed by RefreshList to fit content (one quest is a
+	-- fixed, small shape) - width is still player-adjustable via the resize
+	-- grip, for long quest titles / long zone names.
 	QTT = CreateFrame("Frame", "XalsQuestCompassFrame", UIParent, "BackdropTemplate")
-	QTT:SetSize(XalsQuestCompassDB.width or defaults.width, XalsQuestCompassDB.height or defaults.height)
+	QTT:SetSize(XalsQuestCompassDB.width or defaults.width, defaults.height)
 	QTT:SetResizable(true)
 	if QTT.SetResizeBounds then
-		QTT:SetResizeBounds(300, 220, 700, 900)
+		QTT:SetResizeBounds(280, 140, 700, 400)
 	else
-		QTT:SetMinResize(300, 220)
-		QTT:SetMaxResize(700, 900)
+		QTT:SetMinResize(280, 140)
+		QTT:SetMaxResize(700, 400)
 	end
-	-- OnSizeChanged handler is attached at the very end of this function,
-	-- once every element it might touch (scrollChild, noQuestsText, etc.)
-	-- actually exists -- SetBackdrop() below can itself trigger a size
-	-- recalculation, and attaching too early caused it to fire mid-build.
 
 	local p = XalsQuestCompassDB.point
 	QTT:SetPoint(p[1], UIParent, p[2], p[3], p[4])
@@ -2280,7 +2433,14 @@ local function CreateMainFrame()
 	QTT:EnableMouse(true)
 	QTT:SetClampedToScreen(true)
 	QTT:RegisterForDrag("LeftButton")
-	QTT:SetScript("OnDragStart", QTT.StartMoving)
+	-- Shift+drag to move, not a plain drag - a plain drag on the window body
+	-- would otherwise fight with scrolling the mouse wheel over the quest
+	-- area or clicking Track/Navigate/Close/the actions menu.
+	QTT:SetScript("OnDragStart", function(self)
+		if IsShiftKeyDown() then
+			self:StartMoving()
+		end
+	end)
 	QTT:SetScript("OnDragStop", function(self)
 		self:StopMovingOrSizing()
 		local point, _, relPoint, x, y = self:GetPoint()
@@ -2302,76 +2462,40 @@ local function CreateMainFrame()
 	end
 
 	QTT:SetFrameStrata("MEDIUM")
+	-- Raises itself above other frames sharing this strata the instant it's
+	-- shown/clicked - the real, standard Blizzard API every established
+	-- addon (confirmed against Zygor's own windows) uses so an overlapping
+	-- window never feels "stuck behind" another one.
+	QTT:SetToplevel(true)
 	QTT:Hide()
 
-	-- Header icon + title
-	QTT.icon = QTT:CreateTexture(nil, "ARTWORK")
-	QTT.icon:SetSize(20, 20)
-	QTT.icon:SetPoint("TOPLEFT", Brand.SAFE_MARGIN, -Brand.SAFE_MARGIN)
-	QTT.icon:SetTexture("Interface\\AddOns\\" .. ADDON_NAME .. "\\Icon.png")
-	QTT.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-
+	-- Title -- no icon, no gear button. Neither was in the confirmed mockup.
+	-- Fixed Simply Sans Bold, not tied to titleFontObj (the user's quest-
+	-- title Font picker) - this is chrome, not customizable quest content.
 	QTT.title = QTT:CreateFontString(nil, "OVERLAY")
-	QTT.title:SetFontObject(titleFontObj)
-	QTT.title:SetPoint("LEFT", QTT.icon, "RIGHT", 6, 0)
+	QTT.title:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\CustomFont.ttf", 20, "OUTLINE")
+	QTT.title:SetPoint("TOPLEFT", Brand.SAFE_MARGIN, -Brand.SAFE_MARGIN)
 	QTT.title:SetText("Quest Compass")
 	QTT.title:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
 
-	-- Close button
-	QTT.closeBtn = Brand.MakeButton(QTT, "X", 24, 24, function() QTT:Hide() end)
+	-- Close -- plain text link, not a bordered X.
+	QTT.closeBtn = Brand.MakeLinkButton(QTT)
+	QTT.closeBtn:SetLabel("Close", GOLD)
+	QTT.closeBtn:SetScript("OnClick", function() QTT:Hide() end)
 	PixelUtil.SetPoint(QTT.closeBtn, "TOPRIGHT", QTT, "TOPRIGHT", -Brand.SAFE_MARGIN, -Brand.SAFE_MARGIN)
 
-	-- Options (gear) button
-	QTT.optionsBtn = CreateFrame("Button", nil, QTT)
-	QTT.optionsBtn:SetSize(16, 16)
-	QTT.optionsBtn:SetPoint("RIGHT", QTT.closeBtn, "LEFT", -2, 0)
-	QTT.optionsBtn:SetNormalTexture("Interface\\GossipFrame\\GossipGossipIcon")
-	QTT.optionsBtn:GetNormalTexture():SetTexCoord(0.05, 0.95, 0.05, 0.95)
-	QTT.optionsBtn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
-	QTT.optionsBtn:SetScript("OnClick", OpenOptionsPanel)
-	QTT.optionsBtn:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:SetText("Open Settings")
-		GameTooltip:Show()
-	end)
-	QTT.optionsBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-	-- Count text
-	QTT.countText = QTT:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	QTT.countText:SetPoint("TOPLEFT", QTT.icon, "BOTTOMLEFT", 0, -6)
+	-- Count text -- the merged "1 / 5 ready to turn in (scroll to see other
+	-- quests in area)" line, filled in by RefreshList. Body text, so Fira
+	-- Sans - not tied to the user's quest-title Font picker.
+	QTT.countText = QTT:CreateFontString(nil, "OVERLAY")
+	QTT.countText:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 12, "")
+	QTT.countText:SetPoint("TOPLEFT", QTT.title, "BOTTOMLEFT", 0, -6)
 	QTT.countText:SetTextColor(WHITE[1], WHITE[2], WHITE[3])
-
-	-- Zone filter quick-toggle (styled like a clickable link)
-	local zoneToggleBtn = CreateTextButton(QTT)
-	zoneToggleBtn:SetPoint("LEFT", QTT.countText, "RIGHT", 6, 0)
-	function zoneToggleBtn:UpdateText()
-		if XalsQuestCompassDB.currentZoneOnly then
-			self:SetLabel("[This Zone Only]", GOLD)
-		else
-			self:SetLabel("[All Zones]", GOLD)
-		end
-	end
-	zoneToggleBtn:SetScript("OnClick", function(self)
-		XalsQuestCompassDB.currentZoneOnly = not XalsQuestCompassDB.currentZoneOnly
-		self:UpdateText()
-		if optionsPanel and optionsPanel.zoneOnlyCB then
-			optionsPanel.zoneOnlyCB:SetChecked(XalsQuestCompassDB.currentZoneOnly)
-		end
-		RefreshList()
-	end)
-	zoneToggleBtn:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:SetText("Click to switch between showing only\nthis zone's turn-ins or all of them.", nil, nil, nil, nil, true)
-		GameTooltip:Show()
-	end)
-	zoneToggleBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	zoneToggleBtn:UpdateText()
-	QTT.zoneToggleBtn = zoneToggleBtn
 
 	-- Header divider
 	local headerDivider = CreateDivider(QTT)
-	headerDivider:SetPoint("TOPLEFT", 14, -58)
-	headerDivider:SetPoint("TOPRIGHT", -14, -58)
+	headerDivider:SetPoint("TOPLEFT", 14, -64)
+	headerDivider:SetPoint("TOPRIGHT", -14, -64)
 
 	-- Empty-state text
 	QTT.noQuestsText = QTT:CreateFontString(nil, "OVERLAY", "GameFontDisableLarge")
@@ -2379,13 +2503,18 @@ local function CreateMainFrame()
 	QTT.noQuestsText:SetText("No quests ready to turn in")
 	QTT.noQuestsText:Hide()
 
-	-- Scroll frame + child
-	local scrollFrame = CreateFrame("ScrollFrame", "XalsQuestCompassScrollFrame", QTT, "UIPanelScrollFrameTemplate")
-	scrollFrame:SetPoint("TOPLEFT", Brand.SAFE_MARGIN, -66)
-	scrollFrame:SetPoint("BOTTOMRIGHT", -30, 82)
-	QTT.scrollFrame = scrollFrame
+	-- Single-quest display area -- only the closest ready quest renders
+	-- here; hovering it and scrolling the mouse wheel cycles through the
+	-- others (see RefreshList/CreateRow's OnMouseWheel handler). No scroll
+	-- frame needed since only one quest is ever shown at a time.
+	local questArea = CreateFrame("Frame", nil, QTT)
+	questArea:SetPoint("TOPLEFT", Brand.SAFE_MARGIN, -QUEST_AREA_TOP)
+	questArea:SetPoint("BOTTOMRIGHT", -Brand.SAFE_MARGIN, QUEST_AREA_BOTTOM)
+	QTT.questArea = questArea
 
-	-- Resize grip -- always available, drag it directly to resize
+	-- Resize grip -- width only matters in practice (height is recomputed
+	-- by RefreshList right after, to fit the single quest row), but drags
+	-- from the corner like any normal resize handle.
 	local resizeHandle = CreateFrame("Button", nil, QTT)
 	resizeHandle:SetSize(16, 16)
 	resizeHandle:SetPoint("BOTTOMRIGHT", -3, 3)
@@ -2398,7 +2527,6 @@ local function CreateMainFrame()
 	resizeHandle:SetScript("OnMouseUp", function()
 		QTT:StopMovingOrSizing()
 		XalsQuestCompassDB.width = QTT:GetWidth()
-		XalsQuestCompassDB.height = QTT:GetHeight()
 		RefreshList()
 	end)
 	resizeHandle:SetScript("OnEnter", function(self)
@@ -2409,35 +2537,11 @@ local function CreateMainFrame()
 	resizeHandle:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	QTT.resizeHandle = resizeHandle
 
-	local scrollChild = CreateFrame("Frame", nil, scrollFrame)
-	scrollChild:SetSize(GetRowWidth(), 1)
-	scrollFrame:SetScrollChild(scrollChild)
-	QTT.scrollChild = scrollChild
-
-	-- Footer divider
-	local footerDivider = CreateDivider(QTT)
-	footerDivider:SetPoint("BOTTOMLEFT", Brand.SAFE_MARGIN, 74)
-	footerDivider:SetPoint("BOTTOMRIGHT", -Brand.SAFE_MARGIN, 74)
-
-	-- Footer is 2 stacked rows: Navigate to Nearest on top, and Track All /
-	-- Route All / Untrack All sharing the bottom row. A 10px gap between rows
-	-- keeps their borders from touching/overlapping.
-	-- Route All -- computes a multi-stop route through every ready quest and
-	-- starts walking it. Shares the bottom row with Track All/Untrack All
-	-- while idle; while a route is active this slot swaps to a Stop X/Y
-	-- readout plus Skip/Cancel, which is too wide to fit alongside Track
-	-- All/Untrack All, so those two hide for the duration of the route
-	-- (see UpdateRouteFooter).
-	local routeAllBtn = CreateTextButton(QTT)
-	routeAllBtn:SetPoint("BOTTOM", 0, Brand.SAFE_MARGIN)
-	routeAllBtn:SetLabel("Route All", GOLD)
-	routeAllBtn:SetScript("OnClick", function()
-		StartRoute()
-	end)
-	QTT.routeAllBtn = routeAllBtn
-
+	-- Active-route status (Stop X/Y + Skip/Cancel) -- live progress state,
+	-- so it stays on the window itself rather than living in the actions
+	-- menu below. Only shown while a route is in progress (UpdateRouteFooter).
 	local routeStatusText = QTT:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	routeStatusText:SetPoint("BOTTOM", 0, Brand.SAFE_MARGIN + 3)
+	routeStatusText:SetPoint("BOTTOMLEFT", Brand.SAFE_MARGIN, Brand.SAFE_MARGIN + 5)
 	routeStatusText:SetTextColor(GREEN[1], GREEN[2], GREEN[3])
 	routeStatusText:Hide()
 	QTT.routeStatusText = routeStatusText
@@ -2460,9 +2564,62 @@ local function CreateMainFrame()
 	routeCancelBtn:Hide()
 	QTT.routeCancelBtn = routeCancelBtn
 
-	-- Footer actions, styled as clickable text links
-	local navNearestBtn = CreateTextButton(QTT)
-	navNearestBtn:SetPoint("BOTTOM", 0, 44)
+	-------------------------------------------------
+	-- Actions menu -- everything that used to be a row of footer buttons
+	-- now lives in a flyout triggered by the chevron button in the bottom
+	-- right corner. It drops BELOW the window's own border, not inside it.
+	-------------------------------------------------
+	-- Height is computed, not guessed - FLYOUT_ITEM_COUNT items, each
+	-- FLYOUT_ITEM_HEIGHT tall (Brand.MakeLinkButton's fixed height) with
+	-- FLYOUT_ITEM_GAP between them and FLYOUT_PAD above/below. Adding or
+	-- removing an item below just means updating FLYOUT_ITEM_COUNT instead
+	-- of re-guessing a pixel total that silently clips the last item.
+	local FLYOUT_ITEM_HEIGHT = 20
+	local FLYOUT_ITEM_GAP = 14
+	local FLYOUT_PAD = 14
+	local FLYOUT_ITEM_COUNT = 5 -- zone toggle, Navigate to Nearest, Track All, Route All, Untrack All
+	local flyoutHeight = FLYOUT_PAD * 2 + FLYOUT_ITEM_COUNT * FLYOUT_ITEM_HEIGHT + (FLYOUT_ITEM_COUNT - 1) * FLYOUT_ITEM_GAP
+
+	local flyoutMenu = CreateFrame("Frame", nil, QTT, "BackdropTemplate")
+	flyoutMenu:SetSize(200, flyoutHeight)
+	flyoutMenu:SetPoint("TOP", QTT, "BOTTOM", 0, -6)
+	Brand.ApplyBackground(flyoutMenu)
+	Brand.DrawBorder(flyoutMenu)
+	flyoutMenu:SetFrameStrata("MEDIUM")
+	flyoutMenu:SetFrameLevel(QTT:GetFrameLevel() + 5)
+	flyoutMenu:Hide()
+	QTT.flyoutMenu = flyoutMenu
+
+	-- Zone filter toggle
+	local zoneToggleBtn = Brand.MakeLinkButton(flyoutMenu)
+	zoneToggleBtn:SetPoint("TOPLEFT", FLYOUT_PAD, -FLYOUT_PAD)
+	function zoneToggleBtn:UpdateText()
+		if XalsQuestCompassDB.currentZoneOnly then
+			self:SetLabel("[This Zone Only]", GOLD)
+		else
+			self:SetLabel("[All Zones]", GOLD)
+		end
+	end
+	zoneToggleBtn:SetScript("OnClick", function(self)
+		XalsQuestCompassDB.currentZoneOnly = not XalsQuestCompassDB.currentZoneOnly
+		self:UpdateText()
+		if optionsPanel and optionsPanel.zoneOnlyCB then
+			optionsPanel.zoneOnlyCB:SetChecked(XalsQuestCompassDB.currentZoneOnly)
+		end
+		RefreshList()
+		flyoutMenu:Hide()
+	end)
+	zoneToggleBtn:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Click to switch between showing only\nthis zone's turn-ins or all of them.", nil, nil, nil, nil, true)
+		GameTooltip:Show()
+	end)
+	zoneToggleBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	zoneToggleBtn:UpdateText()
+	QTT.zoneToggleBtn = zoneToggleBtn
+
+	local navNearestBtn = Brand.MakeLinkButton(flyoutMenu)
+	navNearestBtn:SetPoint("TOPLEFT", zoneToggleBtn, "BOTTOMLEFT", 0, -FLYOUT_ITEM_GAP)
 	navNearestBtn:SetLabel("Navigate to Nearest", GOLD)
 	navNearestBtn:SetScript("OnClick", function()
 		local quests = GetTurnInQuests()
@@ -2472,29 +2629,71 @@ local function CreateMainFrame()
 		else
 			print("|cff33ff99Xal's Quest Compass:|r No quests are ready to turn in.")
 		end
+		flyoutMenu:Hide()
 	end)
 
-	local trackAllBtn = CreateTextButton(QTT)
-	trackAllBtn:SetPoint("BOTTOMLEFT", Brand.SAFE_MARGIN, Brand.SAFE_MARGIN)
+	local trackAllBtn = Brand.MakeLinkButton(flyoutMenu)
+	trackAllBtn:SetPoint("TOPLEFT", navNearestBtn, "BOTTOMLEFT", 0, -FLYOUT_ITEM_GAP)
 	trackAllBtn:SetLabel("Track All", LIGHT_BLUE)
 	trackAllBtn:SetScript("OnClick", function()
 		for _, info in ipairs(GetTurnInQuests()) do
 			Compat_AddQuestWatch(info.questID)
 		end
 		RefreshList()
+		flyoutMenu:Hide()
 	end)
 	QTT.trackAllBtn = trackAllBtn
 
-	local untrackAllBtn = CreateTextButton(QTT)
-	untrackAllBtn:SetPoint("BOTTOMRIGHT", -22, Brand.SAFE_MARGIN)
+	-- Route All -- computes a multi-stop route through every ready quest and
+	-- starts walking it. Hides while a route is already active (the status
+	-- readout + Skip/Cancel on the window itself takes over - see
+	-- UpdateRouteFooter).
+	local routeAllBtn = Brand.MakeLinkButton(flyoutMenu)
+	routeAllBtn:SetPoint("TOPLEFT", trackAllBtn, "BOTTOMLEFT", 0, -FLYOUT_ITEM_GAP)
+	routeAllBtn:SetLabel("Route All", GOLD)
+	routeAllBtn:SetScript("OnClick", function()
+		StartRoute()
+		flyoutMenu:Hide()
+	end)
+	QTT.routeAllBtn = routeAllBtn
+
+	local untrackAllBtn = Brand.MakeLinkButton(flyoutMenu)
+	untrackAllBtn:SetPoint("TOPLEFT", routeAllBtn, "BOTTOMLEFT", 0, -FLYOUT_ITEM_GAP)
 	untrackAllBtn:SetLabel("Untrack All", GREY)
 	untrackAllBtn:SetScript("OnClick", function()
 		for _, info in ipairs(GetTurnInQuests()) do
 			Compat_RemoveQuestWatch(info.questID)
 		end
 		RefreshList()
+		flyoutMenu:Hide()
 	end)
 	QTT.untrackAllBtn = untrackAllBtn
+
+	-- Chevron trigger -- double down-chevron, bottom right corner, opens
+	-- the actions menu below the window. Built from plain text (not a
+	-- texture) so it renders in whatever font is active, with zero risk
+	-- of a missing/blank icon asset.
+	local chevronBtn = CreateFrame("Button", nil, QTT)
+	chevronBtn:SetSize(24, 24)
+	chevronBtn:SetPoint("BOTTOMRIGHT", QTT, "BOTTOMRIGHT", -30, Brand.SAFE_MARGIN)
+	local chevronText = chevronBtn:CreateFontString(nil, "OVERLAY")
+	chevronText:SetFontObject(smallFontObj)
+	chevronText:SetText("v\nv")
+	chevronText:SetSpacing(-6)
+	chevronText:SetJustifyH("CENTER")
+	chevronText:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
+	chevronText:SetAllPoints()
+	chevronBtn.text = chevronText
+	chevronBtn:SetScript("OnClick", function()
+		flyoutMenu:SetShown(not flyoutMenu:IsShown())
+	end)
+	chevronBtn:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+		GameTooltip:SetText("More actions")
+		GameTooltip:Show()
+	end)
+	chevronBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	QTT.chevronBtn = chevronBtn
 
 	QTT:SetScript("OnShow", function()
 		RefreshList()
@@ -2507,6 +2706,7 @@ local function CreateMainFrame()
 			QTT.ticker:Cancel()
 			QTT.ticker = nil
 		end
+		QTT.flyoutMenu:Hide()
 	end)
 
 	-- Deliberately NOT registered in UISpecialFrames -- Escape should
