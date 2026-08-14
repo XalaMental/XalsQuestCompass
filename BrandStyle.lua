@@ -54,11 +54,11 @@ end
 -- ("Quest Compass") - NOT applied to row/list content, which stays on
 -- Quest Compass's own customizable font system.
 function Brand.Title(parent, text, size, anchorPoint, relTo, relPoint, x, y)
-	local shadow = Brand.FS(parent, text, "Fonts\\MORPHEUS.TTF", size, "OUTLINE", 0, 0, 0)
+	local shadow = Brand.FS(parent, text, "Interface\\AddOns\\XalsQuestCompass\\Fonts\\CustomFont.ttf", size, "OUTLINE", 0, 0, 0)
 	PixelUtil.SetPoint(shadow, anchorPoint, relTo, relPoint, x + 4, y - 4)
 	shadow:SetJustifyH("CENTER")
 
-	local title = Brand.FS(parent, text, "Fonts\\MORPHEUS.TTF", size, "OUTLINE",
+	local title = Brand.FS(parent, text, "Interface\\AddOns\\XalsQuestCompass\\Fonts\\CustomFont.ttf", size, "OUTLINE",
 		Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
 	PixelUtil.SetPoint(title, anchorPoint, relTo, relPoint, x, y)
 	title:SetJustifyH("CENTER")
@@ -79,9 +79,16 @@ end
 -- have the C_AddOns namespace yet, so this picks whichever actually exists.
 local IsAddOnLoadedCompat = (C_AddOns and C_AddOns.IsAddOnLoaded) or IsAddOnLoaded
 
+-- Whether ElvUI is actually installed, independent of the player's own
+-- elvuiSkinning setting - lets the Options UI gray out the toggle instead
+-- of showing a normal-looking control that silently does nothing.
+function Brand.IsElvUIAvailable()
+	return (IsAddOnLoadedCompat and IsAddOnLoadedCompat("ElvUI")) and true or false
+end
+
 function Brand.GetElvUISkins()
 	if not (XalsQuestCompassDB and XalsQuestCompassDB.elvuiSkinning) then return nil end
-	if not IsAddOnLoadedCompat or not IsAddOnLoadedCompat("ElvUI") then return nil end
+	if not Brand.IsElvUIAvailable() then return nil end
 	local E = unpack(ElvUI)
 	if not E then return nil end
 	return E:GetModule("Skins")
@@ -204,6 +211,124 @@ function Brand.MakeButtonElvUI(S, parent, text, w, h, onClick)
 	function btn:SetBorderColor(r, g, b, a) end
 
 	return btn
+end
+
+-- ── MakeLinkButton()  ─ plain clickable text, no border/fill. For spots
+-- where the bordered MakeButton look reads as too heavy/boxy - e.g. a
+-- quick-toggle sitting inline next to other text (confirmed 2026-08-11,
+-- Quest Compass's zone-filter toggle). Same .label/:SetLabel() surface as
+-- MakeButton so call sites don't need special-case handling for which
+-- style a given button uses.
+function Brand.MakeLinkButton(parent)
+	local btn = CreateFrame("Button", nil, parent)
+	local label = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	label:SetPoint("CENTER")
+	btn.label = label
+	PixelUtil.SetHeight(btn, 20)
+
+	function btn:SetLabel(text, color)
+		color = color or { 1, 1, 1 }
+		self.baseColor = color
+		self.label:SetText(text)
+		self.label:SetTextColor(color[1], color[2], color[3])
+		PixelUtil.SetWidth(self, math.max(self.label:GetStringWidth(), 4))
+	end
+
+	-- HookScript, not SetScript - call sites often need their own OnEnter/
+	-- OnLeave too (e.g. a tooltip), and HookScript lets both run instead of
+	-- whichever is set second silently replacing this one.
+	btn:HookScript("OnEnter", function(self)
+		self.label:SetTextColor(1, 1, 1, 1)
+	end)
+	btn:HookScript("OnLeave", function(self)
+		local c = self.baseColor or { 1, 1, 1 }
+		self.label:SetTextColor(c[1], c[2], c[3])
+	end)
+
+	return btn
+end
+
+-- ── MakeCheckbox()  ─ hand-drawn checkbox, same reason/technique as
+-- MakeButton's hand-drawn border: Blizzard's native UICheckButtonTemplate
+-- was found rendering incomplete (missing its bottom edge entirely, not
+-- just uneven thickness) in a real in-game screenshot on Xal's Roster
+-- Roundup (confirmed 2026-08-12) - ported here verbatim so Quest Compass's
+-- checkboxes match the same brand standard instead of staying native
+-- Blizzard while everything else (buttons, swatches, links) is custom.
+-- This is now the brand standard for checkboxes - stop using
+-- UICheckButtonTemplate in new code.
+--
+-- Usage differs slightly from a native CheckButton: set `cb.OnToggle =
+-- function(self) ... end` instead of `cb:SetScript("OnClick", ...)`, since
+-- OnClick is used internally to flip the checked state before your handler
+-- runs (matching the native behavior where GetChecked() already reflects
+-- the NEW state inside OnClick). There's also no built-in `.Text` region -
+-- build a separate FontString and anchor it `"LEFT", cb, "RIGHT", 6, 0`.
+function Brand.MakeCheckbox(parent, size)
+	size = size or 22
+	local cb = CreateFrame("Button", nil, parent)
+	PixelUtil.SetSize(cb, size, size)
+
+	local bg = cb:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints()
+	bg:SetColorTexture(0.1, 0.1, 0.1, 0.6)
+
+	local thick = Brand.LINE_THICKNESS
+	local r, g, b = Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3]
+
+	local borderTop = cb:CreateTexture(nil, "ARTWORK")
+	PixelUtil.SetPoint(borderTop, "TOPLEFT", cb, "TOPLEFT", 0, 0)
+	PixelUtil.SetPoint(borderTop, "TOPRIGHT", cb, "TOPRIGHT", 0, 0)
+	PixelUtil.SetHeight(borderTop, thick)
+	borderTop:SetColorTexture(r, g, b, 1)
+
+	local borderBottom = cb:CreateTexture(nil, "ARTWORK")
+	PixelUtil.SetPoint(borderBottom, "BOTTOMLEFT", cb, "BOTTOMLEFT", 0, 0)
+	PixelUtil.SetPoint(borderBottom, "BOTTOMRIGHT", cb, "BOTTOMRIGHT", 0, 0)
+	PixelUtil.SetHeight(borderBottom, thick)
+	borderBottom:SetColorTexture(r, g, b, 1)
+
+	local borderLeft = cb:CreateTexture(nil, "ARTWORK")
+	PixelUtil.SetPoint(borderLeft, "TOPLEFT", cb, "TOPLEFT", 0, 0)
+	PixelUtil.SetPoint(borderLeft, "BOTTOMLEFT", cb, "BOTTOMLEFT", 0, 0)
+	PixelUtil.SetWidth(borderLeft, thick)
+	borderLeft:SetColorTexture(r, g, b, 1)
+
+	local borderRight = cb:CreateTexture(nil, "ARTWORK")
+	PixelUtil.SetPoint(borderRight, "TOPRIGHT", cb, "TOPRIGHT", 0, 0)
+	PixelUtil.SetPoint(borderRight, "BOTTOMRIGHT", cb, "BOTTOMRIGHT", 0, 0)
+	PixelUtil.SetWidth(borderRight, thick)
+	borderRight:SetColorTexture(r, g, b, 1)
+
+	-- Texture, not a FontString "X" - a font glyph's CENTER anchor centers
+	-- against the font's full line-height box (ascender/descender padding
+	-- included), not the glyph's actual ink, so it visually drifts off-true-
+	-- center (caught 2026-08-13 via screenshot). Blizzard's own checkmark
+	-- texture centers exactly where told, no font-metrics guesswork.
+	local check = cb:CreateTexture(nil, "OVERLAY")
+	check:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+	check:SetVertexColor(r, g, b, 1)
+	PixelUtil.SetSize(check, size - 4, size - 4)
+	check:SetPoint("CENTER", cb, "CENTER", 0, 0)
+	check:Hide()
+
+	cb.checked = false
+	function cb:SetChecked(state)
+		self.checked = state and true or false
+		if self.checked then check:Show() else check:Hide() end
+	end
+	function cb:GetChecked()
+		return self.checked
+	end
+
+	cb:SetScript("OnEnter", function() bg:SetColorTexture(0.18, 0.18, 0.18, 0.75) end)
+	cb:SetScript("OnLeave", function() bg:SetColorTexture(0.1, 0.1, 0.1, 0.6) end)
+	cb:SetScript("OnClick", function(self)
+		self:SetChecked(not self.checked)
+		if self.OnToggle then self.OnToggle(self) end
+	end)
+
+	return cb
 end
 
 -- ── DrawBorder()  ─ single clean accent-color line around a frame.
