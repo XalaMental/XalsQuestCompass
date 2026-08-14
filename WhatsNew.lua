@@ -47,13 +47,26 @@ local MAX_FH = 560
 local function BuildFrame(installedVersion)
 	local f = CreateFrame("Frame", "XalsQuestCompassWhatsNewFrame", UIParent)
 	f:SetSize(FW, 360)
-	f:SetPoint("CENTER")
+	-- Default offset from dead-center, same reasoning as the standalone
+	-- options window - only used the first time; once dragged, its real
+	-- position is remembered permanently (XalsQuestCompassDB.whatsNewPoint).
+	local savedPoint = XalsQuestCompassDB.whatsNewPoint
+	if savedPoint then
+		f:SetPoint(savedPoint[1], UIParent, savedPoint[2], savedPoint[3], savedPoint[4])
+	else
+		f:SetPoint("CENTER", UIParent, "CENTER", 220, 40)
+	end
 	f:SetFrameStrata("DIALOG")
+	f:SetToplevel(true)
 	f:SetMovable(true)
 	f:EnableMouse(true)
 	f:RegisterForDrag("LeftButton")
 	f:SetScript("OnDragStart", f.StartMoving)
-	f:SetScript("OnDragStop", f.StopMovingOrSizing)
+	f:SetScript("OnDragStop", function(self)
+		self:StopMovingOrSizing()
+		local point, _, relPoint, x, y = self:GetPoint()
+		XalsQuestCompassDB.whatsNewPoint = { point, relPoint, x, y }
+	end)
 	f:SetClampedToScreen(true)
 
 	Brand.ApplyBackground(f)
