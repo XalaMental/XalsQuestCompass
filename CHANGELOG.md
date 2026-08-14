@@ -1,5 +1,26 @@
 # Xal's Quest Compass - Changelog
 
+## 1.4.0 - August 13, 2026
+
+---
+
+I've been wanting Quest Compass's main window to actually look like it belongs with the rest of what I build instead of a thrown-together boxed list, so this update rebuilds it top to bottom - one quest at a time instead of a wall of them, our own fonts instead of stock ones, and a cleaner layout that matches what I'd mocked up for it. Also tracked down and fixed an annoying one: if you run more than one of my addons, their windows could pop open stacked right on top of each other - that's sorted now too.
+
+### 🆕 New
+- **Redesigned main window** - shows the single closest ready quest instead of a scrolling list. Scroll your mouse wheel over it to browse the others; Track and Navigate act on whichever quest is currently shown.
+- **Merged header line** - now reads "1 / 5 ready to turn in", with a scroll hint when there's more than one.
+- **Zone shown in brackets** under the quest's title.
+- **Actions menu** - Navigate to Nearest, Track All, Route All, Untrack All, and the zone filter now live in a dropdown opened from the chevron in the corner, instead of crowding the window itself.
+- **New brand fonts** - Simply Sans Bold for headers, Fira Sans Medium for body text, across the main window and settings.
+
+### 🔧 Fixed
+- A ready quest's zone and distance could sometimes show blank - both now reliably fall back to a sensible value instead of leaving empty space.
+- Quest Compass's windows no longer spawn stacked on top of other Xal's addons' windows - each one starts in its own spot and remembers exactly where you drag it.
+
+### ⚙️ Under the hood
+- Main window now sizes itself to fit its content instead of leaving dead space; still resizable via the corner grip, but now moves via Shift+drag so it doesn't fight with scrolling the quest area or clicking its buttons.
+- Every floating window now raises itself to the front when clicked, so it's never left feeling stuck behind another one.
+
 ## 1.3.0 - August 11, 2026
 
 ---
