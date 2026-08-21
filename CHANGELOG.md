@@ -1,5 +1,19 @@
 # Xal's Quest Compass - Changelog
 
+## 1.5.0 - August 14, 2026
+
+---
+
+I've been slowly bringing every one of my addons onto the same look, and this pass is Quest Compass's turn - buttons across the whole addon are now clean text links instead of boxed buttons (matching Reins and Compendium), and it's got the same background art the rest of the family is using now. While I was in there I also added two things you all asked for: reward icons in the hover preview instead of just item names, and a warning when a ready daily or weekly is about to reset before you get to it. Thanks for sticking with Quest Compass while it keeps growing - appreciate every one of you.
+
+### 🆕 New
+- **Reward preview icons** - hovering a quest now shows the actual item icon next to each reward, not just the name.
+- **Reset warnings** - a ready daily or weekly quest now shows a warning once it's under an hour from resetting, so it doesn't quietly slip away before you get to it.
+
+### 🎨 Visual
+- Buttons across the whole addon are now clean text links instead of boxed buttons - the settings window's close button, its sidebar tabs, and the Skip/Cancel route buttons.
+- Added the shared background art (the same one Reins and Compendium use) to the main window and settings window.
+
 ## 1.4.0 - August 13, 2026
 
 ---
