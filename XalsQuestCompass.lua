@@ -54,7 +54,7 @@ local function Compat_GetQuestEntry(index)
 	end
 	local info = C_QuestLog.GetInfo(index)
 	if not info then return nil end
-	return info.questID, info.title, info.isHeader, info.isHidden
+	return info.questID, info.title, info.isHeader, info.isHidden, info.frequency
 end
 
 local function Compat_GetNumEntries()
@@ -282,25 +282,6 @@ end
 -- Small UI helpers
 -------------------------------------------------
 
--- A real visible button (background + gold border), not just plain clickable
--- text -- used everywhere in the addon (Track/Navigate on each row, the
--- footer actions, the zone toggle), so this one change makes every button in
--- the addon easier to spot at a glance.
-local function CreateTextButton(parent)
-	local Brand = XQC.BrandStyle
-	local btn = Brand.MakeButton(parent, "", 28, 20, nil)
-	btn.label:SetFontObject("GameFontHighlightSmall")
-
-	function btn:SetLabel(text, color)
-		color = color or WHITE
-		self.label:SetText(text)
-		self.label:SetTextColor(color[1], color[2], color[3])
-		PixelUtil.SetWidth(self, math.max(self.label:GetStringWidth() + 20, 28))
-	end
-
-	return btn
-end
-
 -- Brand.DrawDivider takes a fixed x/y/width, but call sites here each anchor
 -- their own divider differently (TOPLEFT/TOPRIGHT, BOTTOMLEFT/BOTTOMRIGHT) -
 -- so this keeps the flexible "return a texture, caller anchors it" shape
@@ -359,9 +340,10 @@ local function AddRewardPreviewLines(tooltip, questID)
 
 	local numRewards = GetNumQuestLogRewards(questID) or 0
 	for i = 1, numRewards do
-		local itemName, _, numItems = GetQuestLogRewardInfo(i, questID)
+		local itemName, itemTexture, numItems = GetQuestLogRewardInfo(i, questID)
 		if itemName then
-			tooltip:AddLine(numItems and numItems > 1 and (itemName .. " x" .. numItems) or itemName, 1, 1, 1)
+			local icon = itemTexture and ("|T" .. itemTexture .. ":16|t ") or ""
+			tooltip:AddLine(icon .. (numItems and numItems > 1 and (itemName .. " x" .. numItems) or itemName), 1, 1, 1)
 			addedAny = true
 		end
 	end
@@ -371,9 +353,10 @@ local function AddRewardPreviewLines(tooltip, questID)
 		tooltip:AddLine(string.format("Choose one of %d rewards", numChoices), 0.9, 0.9, 0.4)
 		addedAny = true
 	elseif numChoices == 1 then
-		local itemName = GetQuestLogChoiceInfo(1, questID)
+		local itemName, itemTexture = GetQuestLogChoiceInfo(1, questID)
 		if itemName then
-			tooltip:AddLine(itemName, 1, 1, 1)
+			local icon = itemTexture and ("|T" .. itemTexture .. ":16|t ") or ""
+			tooltip:AddLine(icon .. itemName, 1, 1, 1)
 			addedAny = true
 		end
 	end
@@ -469,7 +452,7 @@ local function GetTurnInQuests(forceAllZones)
 	end
 
 	for i = 1, numEntries do
-		local questID, title, isHeader, isHidden = Compat_GetQuestEntry(i)
+		local questID, title, isHeader, isHidden, frequency = Compat_GetQuestEntry(i)
 		if isHeader then
 			currentHeaderName = title
 		end
@@ -502,6 +485,24 @@ local function GetTurnInQuests(forceAllZones)
 				if dOk then
 					info.ttt_distSq = distSq
 					info.ttt_onContinent = onContinent
+				end
+
+				-- Expiration warning - daily/weekly quests still reset even
+				-- once ready to turn in, so a stale one can reset out from
+				-- under you before you get to it. (World Quests deliberately
+				-- excluded - they auto-complete on their own the moment the
+				-- objective is done, so they never actually sit in the
+				-- ready-to-turn-in list the way a normal quest does.)
+				if frequency == Enum.QuestFrequency.Daily then
+					local rOk, secondsLeft = pcall(GetQuestResetTime)
+					if rOk and secondsLeft and secondsLeft > 0 then
+						info.minutesLeft = math.floor(secondsLeft / 60)
+					end
+				elseif frequency == Enum.QuestFrequency.Weekly then
+					local rOk, secondsLeft = pcall(C_DateAndTime.GetSecondsUntilWeeklyReset)
+					if rOk and secondsLeft and secondsLeft > 0 then
+						info.minutesLeft = math.floor(secondsLeft / 60)
+					end
 				end
 
 				local include = true
@@ -671,7 +672,14 @@ local function UpdateRow(row, info)
 	row.questID = info.questID
 	row.title:SetText(info.title or "Unknown Quest")
 	row.zoneText:SetText(info.zoneName and ("[" .. info.zoneName .. "]") or "")
-	row.distText:SetText(FormatDistance(info))
+
+	-- Daily/weekly quests still reset even once ready to turn in - warn
+	-- inline once under an hour left so a stale one doesn't reset on you.
+	local distLine = FormatDistance(info)
+	if info.minutesLeft and info.minutesLeft <= 60 then
+		distLine = distLine .. string.format("  |cffff5555(resets in %dm)|r", info.minutesLeft)
+	end
+	row.distText:SetText(distLine)
 
 	local watchType = Compat_GetQuestWatchType(info.questID)
 	local isTracked = watchType and true or false
@@ -1619,6 +1627,7 @@ local function BuildStandaloneOptionsWindow()
 	f:SetClampedToScreen(true)
 
 	Brand.ApplyBackground(f)
+	Brand.ApplyBackgroundImage(f)
 	Brand.DrawBorder(f)
 	-- Roughly centered between the top border (~8px) and the header divider
 	-- (now 80px) - best estimate accounting for the title+shadow's visual
@@ -1626,8 +1635,12 @@ local function BuildStandaloneOptionsWindow()
 	Brand.Title(f, "Xal's Quest Compass", 40, "TOP", f, "TOP", 0, -20)
 
 	-- Header is title + close button ONLY, matching Routes' actual standalone
-	-- window exactly - no other controls up there.
-	local closeBtn = Brand.MakeButton(f, "X", 24, 24, function() f:Hide() end)
+	-- window exactly - no other controls up there. Plain text link, not a
+	-- bordered X - text-link buttons are the addon-wide default now (see
+	-- Xal's Reins), bordered stays only for the rare single prominent CTA.
+	local closeBtn = Brand.MakeLinkButton(f)
+	closeBtn:SetLabel("Close", GOLD)
+	closeBtn:SetScript("OnClick", function() f:Hide() end)
 	PixelUtil.SetPoint(closeBtn, "TOPRIGHT", f, "TOPRIGHT", -Brand.SAFE_MARGIN, -Brand.SAFE_MARGIN)
 
 	-- Pushed down from 66 to 80 - the bigger title + stronger shadow (32pt,
@@ -2341,10 +2354,12 @@ local function BuildStandaloneOptionsWindow()
 	local TAB_SIDE_PAD = 8
 	local anchorTab = nil
 	for i, name in ipairs(SECTION_NAMES) do
-		local tab = Brand.MakeButton(sidebar, name, 116, 24, function() ShowSection(i) end)
+		local tab = Brand.MakeLinkButton(sidebar)
+		tab:SetLabel(name, GOLD)
+		tab:SetScript("OnClick", function() ShowSection(i) end)
 		tab:ClearAllPoints()
 		if anchorTab then
-			PixelUtil.SetPoint(tab, "TOPLEFT", anchorTab, "BOTTOMLEFT", 0, -4)
+			PixelUtil.SetPoint(tab, "TOPLEFT", anchorTab, "BOTTOMLEFT", 0, -10)
 		else
 			-- Buffer below the sidebar frame's own top (which sits right at
 			-- the header divider) - only the button moves, not the divider
@@ -2458,6 +2473,7 @@ local function CreateMainFrame()
 		QTT:SetTemplate("Transparent")
 	else
 		Brand.ApplyBackground(QTT)
+		Brand.ApplyBackgroundImage(QTT)
 		Brand.DrawBorder(QTT)
 	end
 
@@ -2546,7 +2562,7 @@ local function CreateMainFrame()
 	routeStatusText:Hide()
 	QTT.routeStatusText = routeStatusText
 
-	local routeSkipBtn = CreateTextButton(QTT)
+	local routeSkipBtn = Brand.MakeLinkButton(QTT)
 	routeSkipBtn:SetPoint("LEFT", routeStatusText, "RIGHT", 8, 0)
 	routeSkipBtn:SetLabel("Skip", GREY)
 	routeSkipBtn:SetScript("OnClick", function()
@@ -2555,7 +2571,7 @@ local function CreateMainFrame()
 	routeSkipBtn:Hide()
 	QTT.routeSkipBtn = routeSkipBtn
 
-	local routeCancelBtn = CreateTextButton(QTT)
+	local routeCancelBtn = Brand.MakeLinkButton(QTT)
 	routeCancelBtn:SetPoint("LEFT", routeSkipBtn, "RIGHT", 6, 0)
 	routeCancelBtn:SetLabel("Cancel", GREY)
 	routeCancelBtn:SetScript("OnClick", function()
