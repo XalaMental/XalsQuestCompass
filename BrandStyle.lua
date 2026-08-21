@@ -230,8 +230,19 @@ function Brand.MakeLinkButton(parent)
 		color = color or { 1, 1, 1 }
 		self.baseColor = color
 		self.label:SetText(text)
-		self.label:SetTextColor(color[1], color[2], color[3])
+		if not self.selected then
+			self.label:SetTextColor(color[1], color[2], color[3])
+		end
 		PixelUtil.SetWidth(self, math.max(self.label:GetStringWidth(), 4))
+	end
+
+	-- For link buttons used as tabs (e.g. a sidebar) - selected reads pure
+	-- white same as hover, unselected drops back to the button's own base
+	-- color. Optional; a plain one-shot link button never needs to call this.
+	function btn:SetSelected(selected)
+		self.selected = selected
+		local c = selected and { 1, 1, 1 } or (self.baseColor or { 1, 1, 1 })
+		self.label:SetTextColor(c[1], c[2], c[3])
 	end
 
 	-- HookScript, not SetScript - call sites often need their own OnEnter/
@@ -241,7 +252,7 @@ function Brand.MakeLinkButton(parent)
 		self.label:SetTextColor(1, 1, 1, 1)
 	end)
 	btn:HookScript("OnLeave", function(self)
-		local c = self.baseColor or { 1, 1, 1 }
+		local c = self.selected and { 1, 1, 1 } or (self.baseColor or { 1, 1, 1 })
 		self.label:SetTextColor(c[1], c[2], c[3])
 	end)
 
@@ -375,4 +386,17 @@ function Brand.ApplyBackground(f)
 	bg:SetAllPoints()
 	bg:SetColorTexture(Brand.BG[1], Brand.BG[2], Brand.BG[3], Brand.BG[4])
 	return bg
+end
+
+-- The shared dark-swirl texture art, sitting on top of the flat background
+-- color (BORDER layer, below everything else - border/dividers/text all
+-- draw at ARTWORK/OVERLAY, above this), same treatment Reins and Compendium
+-- already use on their own panels. Call AFTER Brand.ApplyBackground so the
+-- flat color shows through anywhere the image doesn't cover. Returns the
+-- texture so callers can hide/show it without hunting for it again.
+function Brand.ApplyBackgroundImage(f)
+	local img = f:CreateTexture(nil, "BORDER")
+	img:SetAllPoints(f)
+	img:SetTexture("Interface\\AddOns\\XalsQuestCompass\\Textures\\PanelBackground.jpg")
+	return img
 end
