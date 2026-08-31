@@ -1,5 +1,17 @@
 # Xal's Quest Compass - Changelog
 
+## 1.6.0 - August 14, 2026
+
+---
+
+Auto-Show popping the full window open in the middle of whatever you were doing was more obtrusive than useful, so this update adds a minimize toggle - when a quest becomes ready on its own, you now get a small, unobtrusive bar instead of the whole window taking over, and you click to expand it when you're ready. Also added an in-game hint for something that changed a couple versions back with zero indication anywhere: holding Shift is what moves the window now, not a plain drag. Thanks for sticking with Quest Compass - appreciate every one of you.
+
+### 🆕 New
+- **Minimize/expand toggle** - collapses the main window down to a small bar showing your ready count. Auto-Show now always pops up minimized instead of opening the full window; opening it yourself (minimap button, slash command) keeps whatever state you last left it in.
+
+### 🔧 Fixed
+- Hovering the main window now shows a tooltip explaining Shift+drag moves it - this changed in a previous version with nothing in-game telling you.
+
 ## 1.5.0 - August 14, 2026
 
 ---
