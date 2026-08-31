@@ -221,6 +221,7 @@ local lastReadyCountAll = 0
 local currentNavQuestID = nil -- which quest we're currently pointing the player toward
 local currentDisplayIndex = 1 -- which ready quest (1 = closest) is currently shown in the single-quest display
 local UpdateRouteFooter -- forward-declared; assigned in the Route planning section, called from RefreshList
+local RefreshList -- forward-declared; assigned below, called from XQC.ToggleMinimized (defined earlier in the file)
 
 -- Row width tracks the actual visible quest display area, so resizing the
 -- window never clips row content again.
@@ -393,10 +394,17 @@ end
 -- takes over, since that's generally the better navigation experience.
 -- Returns true if a TomTom waypoint was sent.
 local function SendTomTomWaypoint(questID, title)
-	if not (SlashCmdList and SlashCmdList["TOMTOM_WAY"]) then return false end
+	if not (SlashCmdList and SlashCmdList["TOMTOM_WAY"]) then
+		print("|cff33ff99Xal's Quest Compass (debug):|r TomTom's /way command isn't registered - SlashCmdList[\"TOMTOM_WAY\"] is nil.")
+		return false
+	end
 	local uiMapID, x, y = GetQuestWaypointCoords(questID)
-	if not uiMapID then return false end
+	if not uiMapID then
+		print("|cff33ff99Xal's Quest Compass (debug):|r GetQuestWaypointCoords found no waypoint for this quest (questID " .. tostring(questID) .. ") - falling back to the built-in arrow.")
+		return false
+	end
 	local command = string.format("#%d %.1f %.1f %s", uiMapID, x * 100, y * 100, title or "Quest")
+	print("|cff33ff99Xal's Quest Compass (debug):|r Sending to TomTom: " .. command)
 	SlashCmdList["TOMTOM_WAY"](command)
 	return true
 end
@@ -576,6 +584,7 @@ local BOTTOM_PADDING = 6
 local MIN_ROW_HEIGHT = 36
 local QUEST_AREA_TOP = 76 -- distance from QTT's top to questArea's top
 local QUEST_AREA_BOTTOM = 44 -- distance from QTT's bottom to questArea's bottom (room for the chevron/route status strip)
+local MINIMIZED_HEIGHT = 40 -- small footprint is the whole point of the minimized bar
 
 local function CreateRow(parent, index)
 	local row = CreateFrame("Frame", nil, parent)
@@ -714,10 +723,60 @@ local function UpdateRow(row, info)
 end
 
 -------------------------------------------------
+-- Minimize
+-------------------------------------------------
+-- Collapses the main window down to just a thin title bar, same pattern as
+-- Xal's Compendium. Exists mainly so Auto-Show can pop up something
+-- unobtrusive instead of the full window taking over the screen at a bad
+-- moment - Auto-Show always minimizes on its own (see RefreshList), a
+-- manual open (minimap button, slash command) respects whatever state was
+-- last left.
+function XQC.ApplyMinimizedState()
+	if not QTT then return end
+	local minimized = XalsQuestCompassDB.minimized
+
+	local fullElements = { QTT.title, QTT.countText, QTT.questArea, QTT.headerDivider, QTT.chevronBtn }
+	for _, el in ipairs(fullElements) do
+		if el then
+			if minimized then el:Hide() else el:Show() end
+		end
+	end
+
+	local SAFE_MARGIN = XQC.BrandStyle.SAFE_MARGIN
+	if minimized then
+		QTT.minimizedLabel:Show()
+		QTT.minimizeBtn:SetLabel("+", GOLD)
+		-- The compact bar has no room for a top-anchored button with a full
+		-- top+bottom buffer both - vertically centered instead, same small
+		-- footprint, no border-crowding.
+		QTT.closeBtn:ClearAllPoints()
+		PixelUtil.SetPoint(QTT.closeBtn, "RIGHT", QTT, "RIGHT", -SAFE_MARGIN, 0)
+		QTT.minimizeBtn:ClearAllPoints()
+		PixelUtil.SetPoint(QTT.minimizeBtn, "RIGHT", QTT.closeBtn, "LEFT", -10, 0)
+		QTT:SetHeight(MINIMIZED_HEIGHT)
+	else
+		QTT.minimizedLabel:Hide()
+		QTT.minimizeBtn:SetLabel("-", GOLD)
+		QTT.closeBtn:ClearAllPoints()
+		PixelUtil.SetPoint(QTT.closeBtn, "TOPRIGHT", QTT, "TOPRIGHT", -SAFE_MARGIN, -SAFE_MARGIN)
+		QTT.minimizeBtn:ClearAllPoints()
+		PixelUtil.SetPoint(QTT.minimizeBtn, "TOPRIGHT", QTT.closeBtn, "TOPLEFT", -10, 0)
+	end
+end
+
+function XQC.ToggleMinimized()
+	XalsQuestCompassDB.minimized = not XalsQuestCompassDB.minimized
+	XQC.ApplyMinimizedState()
+	if not XalsQuestCompassDB.minimized then
+		RefreshList()
+	end
+end
+
+-------------------------------------------------
 -- Refresh
 -------------------------------------------------
 
-local function RefreshList()
+function RefreshList()
 	-- questArea is one of the last elements built in CreateMainFrame,
 	-- so checking for it confirms the window actually finished
 	-- constructing -- guards against any code path that fires this
@@ -735,7 +794,14 @@ local function RefreshList()
 		pcall(PlaySound, SOUNDKIT.READY_CHECK, "Master")
 	end
 	if XalsQuestCompassDB.autoShow and (allReadyCount > lastReadyCountAll) and not QTT:IsShown() then
+		-- Auto-Show always minimizes on its own, regardless of whatever
+		-- state was last left in - the whole point is popping up something
+		-- unobtrusive instead of the full window taking over at a random
+		-- moment. A manual open (minimap button, slash command) is
+		-- unaffected by this and just respects whatever's already set.
+		XalsQuestCompassDB.minimized = true
 		QTT:Show()
+		XQC.ApplyMinimizedState()
 	end
 	lastReadyCountAll = allReadyCount
 
@@ -755,6 +821,13 @@ local function RefreshList()
 	lastReadyCount = #quests
 
 	if not QTT:IsShown() then return end
+
+	if XalsQuestCompassDB.minimized then
+		QTT.minimizedLabel:SetText(
+			string.format("%d quest%s ready to turn in", #quests, (#quests == 1) and "" or "s")
+		)
+		return
+	end
 
 	-- Fade When Empty: window goes fully invisible and click-through when
 	-- there's nothing ready, snapping back the instant a quest becomes
@@ -2461,6 +2534,15 @@ local function CreateMainFrame()
 		local point, _, relPoint, x, y = self:GetPoint()
 		XalsQuestCompassDB.point = { point, relPoint, x, y }
 	end)
+	-- Shift+drag isn't discoverable on its own - a hover hint on the window
+	-- itself, not just a changelog line, so a player actually has a way to
+	-- find out how to move it.
+	QTT:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
+		GameTooltip:SetText("Hold Shift and drag to move this window", nil, nil, nil, nil, true)
+		GameTooltip:Show()
+	end)
+	QTT:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
 	-- Branded chrome: opaque near-black background, pixel-snapped accent-gold
 	-- border - same look as every other Xal's addon. If ElvUI Skinning is on
@@ -2500,6 +2582,34 @@ local function CreateMainFrame()
 	QTT.closeBtn:SetScript("OnClick", function() QTT:Hide() end)
 	PixelUtil.SetPoint(QTT.closeBtn, "TOPRIGHT", QTT, "TOPRIGHT", -Brand.SAFE_MARGIN, -Brand.SAFE_MARGIN)
 
+	-- Minimize/expand toggle - collapses the window down to just a thin
+	-- title bar showing the ready count, same pattern as Xal's Compendium.
+	-- Mainly exists so Auto-Show can pop up something unobtrusive instead of
+	-- the full window taking over the screen at an inconvenient moment.
+	QTT.minimizeBtn = Brand.MakeLinkButton(QTT)
+	-- A single "-"/"+" character is tiny both to see and to click with
+	-- MakeLinkButton's default small font + auto-width-to-text sizing
+	-- (confirmed via screenshot). Bigger font AND a real hitbox, both
+	-- re-applied every time the label changes since SetLabel resets the
+	-- font/width on its own each call.
+	QTT.minimizeBtn.label:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 20, "")
+	local minimizeBtnSetLabel = QTT.minimizeBtn.SetLabel
+	function QTT.minimizeBtn:SetLabel(text, color)
+		minimizeBtnSetLabel(self, text, color)
+		self.label:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 20, "")
+		PixelUtil.SetSize(self, 26, 26)
+	end
+	QTT.minimizeBtn:SetScript("OnClick", function() XQC.ToggleMinimized() end)
+	PixelUtil.SetPoint(QTT.minimizeBtn, "TOPRIGHT", QTT.closeBtn, "TOPLEFT", -10, 0)
+
+	-- Minimized-state label ("3 ready to turn in") - only shown while
+	-- minimized, replacing the title/count/quest area entirely.
+	QTT.minimizedLabel = QTT:CreateFontString(nil, "OVERLAY")
+	QTT.minimizedLabel:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 13, "")
+	QTT.minimizedLabel:SetPoint("LEFT", QTT, "LEFT", Brand.SAFE_MARGIN, 0)
+	QTT.minimizedLabel:SetTextColor(WHITE[1], WHITE[2], WHITE[3])
+	QTT.minimizedLabel:Hide()
+
 	-- Count text -- the merged "1 / 5 ready to turn in (scroll to see other
 	-- quests in area)" line, filled in by RefreshList. Body text, so Fira
 	-- Sans - not tied to the user's quest-title Font picker.
@@ -2512,6 +2622,7 @@ local function CreateMainFrame()
 	local headerDivider = CreateDivider(QTT)
 	headerDivider:SetPoint("TOPLEFT", 14, -64)
 	headerDivider:SetPoint("TOPRIGHT", -14, -64)
+	QTT.headerDivider = headerDivider
 
 	-- Empty-state text
 	QTT.noQuestsText = QTT:CreateFontString(nil, "OVERLAY", "GameFontDisableLarge")
@@ -2712,6 +2823,7 @@ local function CreateMainFrame()
 	QTT.chevronBtn = chevronBtn
 
 	QTT:SetScript("OnShow", function()
+		XQC.ApplyMinimizedState()
 		RefreshList()
 		if not QTT.ticker then
 			QTT.ticker = C_Timer.NewTicker(1, RefreshList)
