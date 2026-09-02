@@ -19,7 +19,8 @@ local GOLD = { 1, 0.82, 0 }
 local GREEN = { 0.4, 1, 0.4 }
 local LIGHT_BLUE = { 0.55, 0.8, 1 }
 local GREY = { 0.6, 0.6, 0.6 }
-local WHITE = { 1, 1, 1 }
+local MUTED_GREY = { 0.588, 0.569, 0.659 } -- #9691a8, confirmed mockup color for the quest row's distance/tag text
+local MOCKUP_GREEN = { 0.11, 0.56, 0.31 } -- darkened from #2ecc71 (2026-09-02, still too light) - GREEN above is brighter/lighter, wrong for this row
 
 -------------------------------------------------
 -- Compat (Retail vs Classic)
@@ -120,15 +121,22 @@ local function Compat_RemoveQuestWatch(questID)
 	C_QuestLog.RemoveQuestWatch(questID)
 end
 
--- Points WoW's own on-screen tracking arrow at a quest. C_SuperTrack doesn't
--- exist on Classic at all; the equivalent there is a couple of plain globals.
+-- Points WoW's own on-screen tracking arrow at a quest, or clears it (pass
+-- nil/false). C_SuperTrack doesn't exist on Classic at all; the equivalent
+-- there is a couple of plain globals. 0 is the real API's own "none" value -
+-- passing nil straight through was throwing ("Usage: number expected"),
+-- confirmed 2026-09-02 via debug output: StopNavigating() silently died on
+-- this exact call, which is why clicking Navigate a second time never
+-- turned it off. pcall as a second line of defense so a future API quirk
+-- here can never again silently break the toggle.
 local function Compat_SetSuperTracked(questID)
+	local clearedID = questID or 0
 	if IS_CLASSIC then
-		if SetSuperTrackedQuestID then SetSuperTrackedQuestID(questID) end
+		if SetSuperTrackedQuestID then pcall(SetSuperTrackedQuestID, clearedID) end
 		return
 	end
 	if C_SuperTrack and C_SuperTrack.SetSuperTrackedQuestID then
-		C_SuperTrack.SetSuperTrackedQuestID(questID)
+		pcall(C_SuperTrack.SetSuperTrackedQuestID, clearedID)
 	end
 end
 
@@ -223,12 +231,34 @@ local UpdateRouteFooter -- forward-declared; assigned in the Route planning sect
 local RefreshList -- forward-declared; assigned below, called from XQC.ToggleMinimized (defined earlier in the file)
 
 -- Row width tracks the actual visible quest display area, so resizing the
--- window never clips row content again.
+-- window never clips row content again. Derived from QTT's own width (set
+-- explicitly via SetSize, so it's always reliable) rather than questArea's
+-- anchor-computed width, which can still read 0 the first time RefreshList
+-- runs right after login - before WoW's layout pass resolves it - leaving
+-- the row's text and background zero-width and invisible.
 local function GetRowWidth()
-	if QTT and QTT.questArea then
-		return QTT.questArea:GetWidth()
+	if QTT then
+		return QTT:GetWidth() - (2 * XQC.BrandStyle.SAFE_MARGIN)
 	end
 	return ROW_WIDTH
+end
+
+-- Auto-width: whichever is naturally wider, the header (title/count/Close)
+-- or the row's own default width, wins - both the header and the row are
+-- anchored to the same window width, so Close always lines up directly
+-- above Track/Navigate instead of drifting independently (confirmed
+-- 2026-09-02). Computed from each element's own rendered width, not from
+-- Close's on-screen position - Close is fixed to the window's right margin
+-- (matching Track/Navigate below it), so its position doesn't reflect how
+-- much room the header actually needs. Called from RefreshList in BOTH the
+-- minimized and expanded paths - minimized used to skip this entirely,
+-- which is why the count text and Close overlapped once minimized.
+local function SyncWindowWidth()
+	if not QTT then return end
+	local SAFE_MARGIN = XQC.BrandStyle.SAFE_MARGIN
+	local headerNaturalWidth = SAFE_MARGIN + QTT.title:GetWidth() + 10
+		+ QTT.countText:GetWidth() + 14 + QTT.closeBtn:GetWidth() + SAFE_MARGIN
+	QTT:SetWidth(math.max(defaults.width, headerNaturalWidth))
 end
 
 -------------------------------------------------
@@ -243,6 +273,33 @@ local smallFontObj = CreateFont("XalsQuestCompassSmallFont")
 -- custom font ever fails to load) never hits a "Font not set" error.
 titleFontObj:SetFont("Fonts\\FRIZQT__.TTF", 15, "OUTLINE")
 smallFontObj:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
+
+-- Quest row title font - fixed, not tied to the font picker above. The
+-- confirmed mockup's row name is literally set in Inter, weight 600 - so
+-- this is the real Inter SemiBold static TTF (rsms/inter v3.19), not a
+-- substitute already used elsewhere in the addon.
+local rowNameFontObj = CreateFont("XalsQuestCompassRowNameFont")
+rowNameFontObj:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\Inter-SemiBold.ttf", 14, "")
+rowNameFontObj:SetShadowOffset(1, -1)
+rowNameFontObj:SetShadowColor(0, 0, 0, 1)
+
+-- Body text (row distance/tag, header count) - the mockup's regular-weight
+-- Inter, no shadow at all (the row's own dark background handles contrast,
+-- confirmed 2026-09-02 - a text shadow on top of it read as an unwanted
+-- extra outline).
+local rowBodyFontObj = CreateFont("XalsQuestCompassRowBodyFont")
+rowBodyFontObj:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\Inter-Regular.ttf", 12, "")
+
+-- Header count text ("1/1 ready") - same Inter Regular as rowBodyFontObj,
+-- but WITH a shadow baked directly into the font object. A shadow set as a
+-- per-instance override on the countText FontString (after SetFontObject)
+-- never rendered at all, at any offset/color, confirmed 2026-09-02 - this
+-- client only honors shadow settings baked into the font object itself for
+-- a font-object-linked FontString, not instance-level overrides.
+local headerCountFontObj = CreateFont("XalsQuestCompassHeaderCountFont")
+headerCountFontObj:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\Inter-Regular.ttf", 12, "")
+headerCountFontObj:SetShadowOffset(1, -1)
+headerCountFontObj:SetShadowColor(0, 0, 0, 1)
 
 local function ApplyFontSettings()
 	local opt = GetFontOption(XalsQuestCompassDB.fontKey)
@@ -429,6 +486,13 @@ local function NavigateToQuest(questID, title)
 	end
 end
 
+-- Clicking Navigate a second time on the quest already being navigated to
+-- turns it off instead of just re-sending the same waypoint/SuperTrack call.
+local function StopNavigating()
+	Compat_SetSuperTracked(nil)
+	currentNavQuestID = nil
+end
+
 -------------------------------------------------
 -- Data
 -------------------------------------------------
@@ -560,24 +624,34 @@ end
 -------------------------------------------------
 
 local TOP_PADDING = 5
-local CONTROL_GAP = 4
-local CONTROL_LINE_HEIGHT = 16
 local BOTTOM_PADDING = 6
 local MIN_ROW_HEIGHT = 36
-local QUEST_AREA_TOP = 76 -- distance from QTT's top to questArea's top
+local QUEST_AREA_TOP = 52 -- distance from QTT's top to questArea's top (header is now one line, not two)
 local QUEST_AREA_BOTTOM = 44 -- distance from QTT's bottom to questArea's bottom (room for the chevron/route status strip)
-local MINIMIZED_HEIGHT = 40 -- small footprint is the whole point of the minimized bar
+
+-- Same treatment as Xpedited Routes' Gather Tally redesign (confirmed
+-- 2026-09-02, "totally follow the same styling as we did in routes"): each
+-- row is its own standalone popup - a gradient fading to transparent
+-- instead of a flat/zebra background. No border - the confirmed mockup's
+-- .qc-row only ever had the gradient, nothing else.
 
 local function CreateRow(parent, index)
 	local row = CreateFrame("Frame", nil, parent)
 	row:SetSize(GetRowWidth(), MIN_ROW_HEIGHT)
 	row:SetClipsChildren(false)
 	row:EnableMouse(true)
+	row:EnableMouseWheel(true) -- was missing - OnMouseWheel below never fired without this (confirmed 2026-09-02)
 
-	-- subtle zebra striping, like many quest/achievement lists
+	-- Gradient instead of the old flat/zebra background - solid-ish under
+	-- the Track/Navigate links on the right, fading to fully transparent on
+	-- the left. SetGradient needs an actual base texture assigned first -
+	-- confirmed against BetterBags' own working item-row highlight, which
+	-- calls SetTexture("Interface/Buttons/WHITE8x8") before SetGradient.
+	-- Without that, the texture has nothing to render the gradient onto.
 	local bg = row:CreateTexture(nil, "BACKGROUND")
 	bg:SetAllPoints()
-	bg:SetColorTexture(1, 1, 1, (index % 2 == 0) and 0.035 or 0)
+	bg:SetTexture("Interface/Buttons/WHITE8x8")
+	bg:SetGradient("HORIZONTAL", CreateColor(0.08, 0.06, 0.04, 0.4), CreateColor(0.08, 0.06, 0.04, 0.98))
 	row.bg = bg
 
 	local hoverBg = row:CreateTexture(nil, "BACKGROUND", nil, 1)
@@ -586,19 +660,12 @@ local function CreateRow(parent, index)
 	hoverBg:Hide()
 	row.hoverBg = hoverBg
 
-	-- Track/Navigate sit on the title's own line, top right - not their own
-	-- line further down. No ready-check icon; the confirmed mockup has none.
-	local navBtn = XQC.BrandStyle.MakeLinkButton(row)
-	navBtn:SetPoint("TOPRIGHT", row, "TOPRIGHT", -4, -2)
-	navBtn:SetScript("OnClick", function(self)
-		local parentRow = self:GetParent()
-		if not parentRow.questID then return end
-		NavigateToQuest(parentRow.questID, parentRow.title:GetText())
-	end)
-	row.navBtn = navBtn
-
+	-- Track/Navigate stack vertically at the top right (Track above
+	-- Navigate) - not side by side. Matches the confirmed mockup exactly;
+	-- they were wrongly placed side by side before. No ready-check icon;
+	-- the confirmed mockup has none.
 	local trackBtn = XQC.BrandStyle.MakeLinkButton(row)
-	trackBtn:SetPoint("TOPRIGHT", navBtn, "TOPLEFT", -8, 0)
+	trackBtn:SetPoint("TOPRIGHT", row, "TOPRIGHT", -4, -2)
 	trackBtn:SetScript("OnClick", function(self)
 		local parentRow = self:GetParent()
 		if not parentRow.questID then return end
@@ -611,12 +678,41 @@ local function CreateRow(parent, index)
 	end)
 	row.trackBtn = trackBtn
 
+	local navBtn = XQC.BrandStyle.MakeLinkButton(row)
+	-- MakeLinkButton's own hit-box is a fixed 20px tall even though the text
+	-- itself is smaller, so anchoring edge-to-edge (0 offset) still left a
+	-- visible gap - pulled up to cancel that built-in padding instead.
+	navBtn:SetPoint("TOPRIGHT", trackBtn, "BOTTOMRIGHT", 0, 7)
+	navBtn:SetScript("OnClick", function(self)
+		local parentRow = self:GetParent()
+		if not parentRow.questID then return end
+		if currentNavQuestID == parentRow.questID then
+			StopNavigating()
+		else
+			NavigateToQuest(parentRow.questID, parentRow.title:GetText())
+		end
+		RefreshList()
+	end)
+	row.navBtn = navBtn
+
+	-- Distance -- in line with the title (between it and Track, the top
+	-- item of the stacked links), not stacked below the zone name anymore.
+	-- Created before title so title's own RIGHT anchor can stop short of it.
+	local distText = row:CreateFontString(nil, "OVERLAY")
+	distText:SetFontObject(rowBodyFontObj)
+	distText:SetPoint("TOPRIGHT", trackBtn, "TOPLEFT", -8, -2)
+	distText:SetJustifyH("RIGHT")
+	distText:SetTextColor(MUTED_GREY[1], MUTED_GREY[2], MUTED_GREY[3])
+	row.distText = distText
+
 	-- Quest title -- wraps onto a second line instead of clipping, stopping
-	-- short of Track/Navigate so long titles don't run under them.
+	-- short of the distance text so long titles don't run under it. 2px
+	-- left inset so the text isn't sitting flush against the row's own
+	-- background edge.
 	local title = row:CreateFontString(nil, "OVERLAY")
-	title:SetFontObject(titleFontObj)
-	title:SetPoint("TOPLEFT", 0, -2)
-	title:SetPoint("RIGHT", trackBtn, "LEFT", -8, 0)
+	title:SetFontObject(rowNameFontObj)
+	title:SetPoint("TOPLEFT", 4, -2)
+	title:SetPoint("RIGHT", distText, "LEFT", -8, 0)
 	title:SetJustifyH("LEFT")
 	title:SetWordWrap(true)
 	title:SetMaxLines(2)
@@ -626,18 +722,11 @@ local function CreateRow(parent, index)
 	-- Zone name, bracketed, directly under the title - its own line, left
 	-- only, nothing anchored off its right edge anymore.
 	local zoneText = row:CreateFontString(nil, "OVERLAY")
-	zoneText:SetFontObject(smallFontObj)
+	zoneText:SetFontObject(rowBodyFontObj)
 	zoneText:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -2)
 	zoneText:SetJustifyH("LEFT")
-	zoneText:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
+	zoneText:SetTextColor(MUTED_GREY[1], MUTED_GREY[2], MUTED_GREY[3])
 	row.zoneText = zoneText
-
-	-- Distance -- its own line below the zone name.
-	local distText = row:CreateFontString(nil, "OVERLAY")
-	distText:SetFontObject(smallFontObj)
-	distText:SetPoint("TOPLEFT", zoneText, "BOTTOMLEFT", 0, -CONTROL_GAP)
-	distText:SetTextColor(LIGHT_BLUE[1], LIGHT_BLUE[2], LIGHT_BLUE[3])
-	row.distText = distText
 
 	row:SetScript("OnEnter", function(self)
 		self.hoverBg:Show()
@@ -675,29 +764,36 @@ local function UpdateRow(row, info)
 	local watchType = Compat_GetQuestWatchType(info.questID)
 	local isTracked = watchType and true or false
 	if isTracked then
-		row.trackBtn:SetLabel("Tracking", GREEN)
+		row.trackBtn:SetLabel("Tracking", MOCKUP_GREEN)
 	else
 		row.trackBtn:SetLabel("Track", GREY)
 	end
 
 	local isNavigating = currentNavQuestID and currentNavQuestID == info.questID
 	if isNavigating then
-		row.navBtn:SetLabel("Navigating", GREEN)
+		row.navBtn:SetLabel("Navigating", MOCKUP_GREEN)
 	else
 		row.navBtn:SetLabel("Navigate", GOLD)
 	end
 
 	-- Title turns green whenever the quest is tracked or being navigated to
-	-- - either one counts as "you're actively on this quest."
+	-- - either one counts as "you're actively on this quest." The row's
+	-- chamfered border always matches this same color, same idea as Gather
+	-- Tally's border-matches-item-quality-color pattern.
+	local titleR, titleG, titleB
 	if isTracked or isNavigating then
-		row.title:SetTextColor(GREEN[1], GREEN[2], GREEN[3])
+		titleR, titleG, titleB = MOCKUP_GREEN[1], MOCKUP_GREEN[2], MOCKUP_GREEN[3]
 	else
-		row.title:SetTextColor(GetDefaultTitleColor())
+		titleR, titleG, titleB = GetDefaultTitleColor()
 	end
+	row.title:SetTextColor(titleR, titleG, titleB)
 
+	-- Distance no longer adds its own stacked line - it sits on the title's
+	-- own line now - so the height math drops the CONTROL_GAP+
+	-- CONTROL_LINE_HEIGHT term that used to reserve room for it.
 	local titleHeight = row.title:GetStringHeight() or 16
 	local zoneHeight = row.zoneText:GetStringHeight() or 12
-	local rowHeight = TOP_PADDING + titleHeight + 2 + zoneHeight + CONTROL_GAP + CONTROL_LINE_HEIGHT + BOTTOM_PADDING
+	local rowHeight = TOP_PADDING + titleHeight + 2 + zoneHeight + BOTTOM_PADDING
 	row:SetHeight(rowHeight)
 
 	row:Show()
@@ -717,32 +813,19 @@ function XQC.ApplyMinimizedState()
 	if not QTT then return end
 	local minimized = XalsQuestCompassDB.minimized
 
-	local fullElements = { QTT.title, QTT.countText, QTT.questArea, QTT.headerDivider, QTT.chevronBtn }
-	for _, el in ipairs(fullElements) do
-		if el then
-			if minimized then el:Hide() else el:Show() end
-		end
-	end
+	-- No separate minimize button anymore - clicking the title itself
+	-- toggles minimized/expanded (same pattern as Xpedited Routes' Gather
+	-- Tally, confirmed 2026-09-02: "make the quest compass header be the
+	-- minimize button"). Same as Gather Tally's own minimized state: the
+	-- title/count/Close header stays exactly where it is - only the quest
+	-- row area collapses away. titleClick stays live in both states so the
+	-- title can always be clicked to toggle back.
+	if QTT.questArea then QTT.questArea:SetShown(not minimized) end
+	if QTT.minimizedBg then QTT.minimizedBg:SetShown(minimized) end
 
 	local SAFE_MARGIN = XQC.BrandStyle.SAFE_MARGIN
 	if minimized then
-		QTT.minimizedLabel:Show()
-		QTT.minimizeBtn:SetLabel("+", GOLD)
-		-- The compact bar has no room for a top-anchored button with a full
-		-- top+bottom buffer both - vertically centered instead, same small
-		-- footprint, no border-crowding.
-		QTT.closeBtn:ClearAllPoints()
-		PixelUtil.SetPoint(QTT.closeBtn, "RIGHT", QTT, "RIGHT", -SAFE_MARGIN, 0)
-		QTT.minimizeBtn:ClearAllPoints()
-		PixelUtil.SetPoint(QTT.minimizeBtn, "RIGHT", QTT.closeBtn, "LEFT", -10, 0)
-		QTT:SetHeight(MINIMIZED_HEIGHT)
-	else
-		QTT.minimizedLabel:Hide()
-		QTT.minimizeBtn:SetLabel("-", GOLD)
-		QTT.closeBtn:ClearAllPoints()
-		PixelUtil.SetPoint(QTT.closeBtn, "TOPRIGHT", QTT, "TOPRIGHT", -SAFE_MARGIN, -SAFE_MARGIN)
-		QTT.minimizeBtn:ClearAllPoints()
-		PixelUtil.SetPoint(QTT.minimizeBtn, "TOPRIGHT", QTT.closeBtn, "TOPLEFT", -10, 0)
+		QTT:SetHeight(SAFE_MARGIN * 2 + 16)
 	end
 end
 
@@ -805,10 +888,15 @@ function RefreshList()
 
 	if not QTT:IsShown() then return end
 
+	if currentDisplayIndex > #quests then currentDisplayIndex = #quests end
+	if currentDisplayIndex < 1 then currentDisplayIndex = 1 end
+
+	-- Minimized: title/count/Close stay exactly where they are (same bar as
+	-- expanded, per the confirmed mockup) - only the quest row itself is
+	-- skipped, since questArea is hidden by ApplyMinimizedState.
 	if XalsQuestCompassDB.minimized then
-		QTT.minimizedLabel:SetText(
-			string.format("%d quest%s ready to turn in", #quests, (#quests == 1) and "" or "s")
-		)
+		QTT.countText:SetText(string.format("%d/%d ready", currentDisplayIndex, #quests))
+		SyncWindowWidth()
 		return
 	end
 
@@ -834,16 +922,14 @@ function RefreshList()
 		return
 	end
 
-	if currentDisplayIndex > #quests then currentDisplayIndex = #quests end
-	if currentDisplayIndex < 1 then currentDisplayIndex = 1 end
-
-	-- Merged "1 / 5 ready to turn in" line, with a dimmer scroll hint
-	-- tacked on only when there's actually something else to scroll to.
-	local headerText = string.format("%d / %d ready to turn in", currentDisplayIndex, #quests)
+	-- Merged "1/5 ready" line, with a dimmer scroll hint tacked on only
+	-- when there's actually something else to scroll to.
+	local headerText = string.format("%d/%d ready", currentDisplayIndex, #quests)
 	if #quests > 1 then
 		headerText = headerText .. "  |cffaaaaaa(scroll to browse)|r"
 	end
 	QTT.countText:SetText(headerText)
+	SyncWindowWidth()
 
 	local rowWidth = GetRowWidth()
 	local row = rows[1]
@@ -1399,7 +1485,7 @@ local function CreateOptionsPanel()
 	-- Automation section
 	local automationTitle = Brand.FS(scrollChild, "Automation", "Fonts\\FRIZQT__.TTF", 16, "",
 		Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
-	automationTitle:SetPoint("TOPLEFT", minimapCB, "BOTTOMLEFT", 2, -22)
+	automationTitle:SetPoint("TOPLEFT", fadeCB, "BOTTOMLEFT", 2, -22)
 	local automationDivider = CreateDivider(scrollChild)
 	automationDivider:SetPoint("TOPLEFT", automationTitle, "BOTTOMLEFT", 0, -6)
 	automationDivider:SetPoint("RIGHT", scrollChild, "RIGHT", -2, 0)
@@ -1682,8 +1768,10 @@ local function BuildStandaloneOptionsWindow()
 	end)
 	f:SetClampedToScreen(true)
 
+	-- No swirl background image on the menu anymore (2026-09-02 rebrand,
+	-- same treatment as Xpedited Routes' standalone settings window) - just
+	-- the flat indigo Brand.BG color on its own.
 	Brand.ApplyBackground(f)
-	Brand.ApplyBackgroundImage(f)
 	Brand.DrawBorder(f)
 	-- Roughly centered between the top border (~8px) and the header divider
 	-- (now 80px) - best estimate accounting for the title+shadow's visual
@@ -1858,7 +1946,7 @@ local function BuildStandaloneOptionsWindow()
 		local desc = AddCardHeader(parent, anchorTo, gap, name, description)
 
 		local cb = Brand.MakeCheckbox(parent, 22)
-		cb:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", -2, -12)
+		cb:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -12)
 		local label = parent:CreateFontString(nil, "OVERLAY")
 		label:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_LABEL_FONT_SIZE, "")
 		label:SetTextColor(0.95, 0.60, 0.10)
@@ -2485,17 +2573,11 @@ end
 
 local function CreateMainFrame()
 	-- Height is computed by RefreshList to fit content (one quest is a
-	-- fixed, small shape) - width is still player-adjustable via the resize
-	-- grip, for long quest titles / long zone names.
+	-- fixed, small shape). No resize grip anymore (2026-09-02, not in the
+	-- confirmed mockup - removed, not just hidden), so width is fixed at
+	-- whatever's saved/default.
 	QTT = CreateFrame("Frame", "XalsQuestCompassFrame", UIParent, "BackdropTemplate")
 	QTT:SetSize(XalsQuestCompassDB.width or defaults.width, defaults.height)
-	QTT:SetResizable(true)
-	if QTT.SetResizeBounds then
-		QTT:SetResizeBounds(280, 140, 700, 400)
-	else
-		QTT:SetMinResize(280, 140)
-		QTT:SetMaxResize(700, 400)
-	end
 
 	local p = XalsQuestCompassDB.point
 	QTT:SetPoint(p[1], UIParent, p[2], p[3], p[4])
@@ -2527,20 +2609,30 @@ local function CreateMainFrame()
 	end)
 	QTT:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
-	-- Branded chrome: opaque near-black background, pixel-snapped accent-gold
-	-- border - same look as every other Xal's addon. If ElvUI Skinning is on
-	-- and ElvUI is installed, defer to ElvUI's own template instead - a
-	-- runtime toggle, not a replacement: the brand chrome above is what
-	-- still renders the instant the setting is off or ElvUI isn't present.
+	-- No background/border chrome at all while expanded (2026-09-02 rebrand,
+	-- same treatment as Gather Tally: "the bordered green-swirl panel goes
+	-- away... just floating text over the game world"). If ElvUI Skinning is
+	-- on and ElvUI is installed, defer to ElvUI's own template instead -
+	-- unrelated to this change, still its own separate opt-in path.
 	local Brand = XQC.BrandStyle
 	local elvS = Brand.GetElvUISkins()
 	if elvS then
 		QTT:SetTemplate("Transparent")
-	else
-		Brand.ApplyBackground(QTT)
-		Brand.ApplyBackgroundImage(QTT)
-		Brand.DrawBorder(QTT)
 	end
+
+	-- Minimized-bar background - a divider-like bleed, not a full-height
+	-- block: only spans the BOTTOM HALF of the bar (bottom edge to vertical
+	-- center), so the gradient (dark solid at the bottom, fully transparent
+	-- at the top of this half) finishes fading by the header's midpoint
+	-- instead of stretching all the way up past the text. Only shown while
+	-- minimized (ApplyMinimizedState); expanded state stays fully bare.
+	QTT.minimizedBg = QTT:CreateTexture(nil, "BACKGROUND")
+	QTT.minimizedBg:SetPoint("BOTTOMLEFT", QTT, "BOTTOMLEFT")
+	QTT.minimizedBg:SetPoint("BOTTOMRIGHT", QTT, "BOTTOMRIGHT")
+	QTT.minimizedBg:SetPoint("TOP", QTT, "CENTER")
+	QTT.minimizedBg:SetTexture("Interface/Buttons/WHITE8x8")
+	QTT.minimizedBg:SetGradient("VERTICAL", CreateColor(0.03, 0.028, 0.06, 0.95), CreateColor(0.03, 0.028, 0.06, 0))
+	QTT.minimizedBg:Hide()
 
 	QTT:SetFrameStrata("MEDIUM")
 	-- Raises itself above other frames sharing this strata the instant it's
@@ -2551,61 +2643,64 @@ local function CreateMainFrame()
 	QTT:Hide()
 
 	-- Title -- no icon, no gear button. Neither was in the confirmed mockup.
-	-- Fixed Simply Sans Bold, not tied to titleFontObj (the user's quest-
-	-- title Font picker) - this is chrome, not customizable quest content.
+	-- Fixed Cinzel (the mockup's actual title font - Cinzel Bold static TTF,
+	-- NDISCOVER/Cinzel), not tied to titleFontObj (the user's quest-title
+	-- Font picker) - this is chrome, not customizable quest content. Color
+	-- is Brand.ACCENT (the new orange) instead of the addon's own local
+	-- GOLD constant. Drop shadow instead of OUTLINE, matching the mockup's
+	-- text-shadow rather than the old stock-game-font outline look.
 	QTT.title = QTT:CreateFontString(nil, "OVERLAY")
-	QTT.title:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\CustomFont.ttf", 20, "OUTLINE")
+	QTT.title:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\Cinzel-Bold.ttf", 20, "")
+	QTT.title:SetShadowOffset(1, -1)
+	QTT.title:SetShadowColor(0, 0, 0, 0.9)
 	QTT.title:SetPoint("TOPLEFT", Brand.SAFE_MARGIN, -Brand.SAFE_MARGIN)
 	QTT.title:SetText("Quest Compass")
-	QTT.title:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
+	QTT.title:SetTextColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
 
-	-- Close -- plain text link, not a bordered X.
+	-- Clicking the title toggles minimized/expanded - replaces the old
+	-- separate "-"/"+" minimize button entirely (confirmed 2026-09-02, same
+	-- pattern as Gather Tally's title). A FontString can't take clicks on
+	-- its own, so a transparent Button sits over it, sized to the actual
+	-- rendered text.
+	-- SetAllPoints tracks the title's actual rendered box live, instead of a
+	-- one-time GetStringWidth() snapshot - that snapshot broke minimizing
+	-- entirely once the title switched to a freshly-loaded custom font
+	-- (Cinzel), whose width wasn't measurable yet at the instant this ran.
+	QTT.titleClick = CreateFrame("Button", nil, QTT)
+	QTT.titleClick:SetAllPoints(QTT.title)
+	QTT.titleClick:SetScript("OnClick", function() XQC.ToggleMinimized() end)
+
+	-- Close -- plain text link, not a bordered X. Fixed to the window's own
+	-- right margin (not chained off the count text) so it always lines up
+	-- directly above Track/Navigate, which are anchored to that same margin
+	-- on the row below - both sides track whichever content is wider via
+	-- the window-width calculation below, instead of drifting independently.
 	QTT.closeBtn = Brand.MakeLinkButton(QTT)
 	QTT.closeBtn:SetLabel("Close", GOLD)
 	QTT.closeBtn:SetScript("OnClick", function() QTT:Hide() end)
 	PixelUtil.SetPoint(QTT.closeBtn, "TOPRIGHT", QTT, "TOPRIGHT", -Brand.SAFE_MARGIN, -Brand.SAFE_MARGIN)
 
-	-- Minimize/expand toggle - collapses the window down to just a thin
-	-- title bar showing the ready count, same pattern as Xal's Compendium.
-	-- Mainly exists so Auto-Show can pop up something unobtrusive instead of
-	-- the full window taking over the screen at an inconvenient moment.
-	QTT.minimizeBtn = Brand.MakeLinkButton(QTT)
-	-- A single "-"/"+" character is tiny both to see and to click with
-	-- MakeLinkButton's default small font + auto-width-to-text sizing
-	-- (confirmed via screenshot). Bigger font AND a real hitbox, both
-	-- re-applied every time the label changes since SetLabel resets the
-	-- font/width on its own each call.
-	QTT.minimizeBtn.label:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 20, "")
-	local minimizeBtnSetLabel = QTT.minimizeBtn.SetLabel
-	function QTT.minimizeBtn:SetLabel(text, color)
-		minimizeBtnSetLabel(self, text, color)
-		self.label:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 20, "")
-		PixelUtil.SetSize(self, 26, 26)
-	end
-	QTT.minimizeBtn:SetScript("OnClick", function() XQC.ToggleMinimized() end)
-	PixelUtil.SetPoint(QTT.minimizeBtn, "TOPRIGHT", QTT.closeBtn, "TOPLEFT", -10, 0)
+	-- While minimized, the title (and its click-region) are hidden - clicking
+	-- anywhere on the compact bar re-expands instead, since there's little
+	-- else interactive on it besides Close.
+	QTT:SetScript("OnMouseUp", function()
+		if XalsQuestCompassDB.minimized then
+			XQC.ToggleMinimized()
+		end
+	end)
 
-	-- Minimized-state label ("3 ready to turn in") - only shown while
-	-- minimized, replacing the title/count/quest area entirely.
-	QTT.minimizedLabel = QTT:CreateFontString(nil, "OVERLAY")
-	QTT.minimizedLabel:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 13, "")
-	QTT.minimizedLabel:SetPoint("LEFT", QTT, "LEFT", Brand.SAFE_MARGIN, 0)
-	QTT.minimizedLabel:SetTextColor(WHITE[1], WHITE[2], WHITE[3])
-	QTT.minimizedLabel:Hide()
-
-	-- Count text -- the merged "1 / 5 ready to turn in (scroll to see other
-	-- quests in area)" line, filled in by RefreshList. Body text, so Fira
-	-- Sans - not tied to the user's quest-title Font picker.
+	-- Count text -- sits beside the title on the same line, not stacked
+	-- underneath it (confirmed mockup: "Quest Compass  1/1 ready  Close" is
+	-- one row). Body text - the mockup's regular Inter, not tied to the
+	-- user's quest-title Font picker. No width constraint here - the window
+	-- itself widens to fit (see RefreshList), so this never needs to wrap
+	-- or clip.
 	QTT.countText = QTT:CreateFontString(nil, "OVERLAY")
-	QTT.countText:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 12, "")
-	QTT.countText:SetPoint("TOPLEFT", QTT.title, "BOTTOMLEFT", 0, -6)
-	QTT.countText:SetTextColor(WHITE[1], WHITE[2], WHITE[3])
-
-	-- Header divider
-	local headerDivider = CreateDivider(QTT)
-	headerDivider:SetPoint("TOPLEFT", 14, -64)
-	headerDivider:SetPoint("TOPRIGHT", -14, -64)
-	QTT.headerDivider = headerDivider
+	QTT.countText:SetFontObject(headerCountFontObj)
+	QTT.countText:SetPoint("LEFT", QTT.title, "RIGHT", 10, -1)
+	QTT.countText:SetJustifyH("LEFT")
+	QTT.countText:SetWordWrap(false)
+	QTT.countText:SetTextColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
 
 	-- Empty-state text
 	QTT.noQuestsText = QTT:CreateFontString(nil, "OVERLAY", "GameFontDisableLarge")
@@ -2621,31 +2716,6 @@ local function CreateMainFrame()
 	questArea:SetPoint("TOPLEFT", Brand.SAFE_MARGIN, -QUEST_AREA_TOP)
 	questArea:SetPoint("BOTTOMRIGHT", -Brand.SAFE_MARGIN, QUEST_AREA_BOTTOM)
 	QTT.questArea = questArea
-
-	-- Resize grip -- width only matters in practice (height is recomputed
-	-- by RefreshList right after, to fit the single quest row), but drags
-	-- from the corner like any normal resize handle.
-	local resizeHandle = CreateFrame("Button", nil, QTT)
-	resizeHandle:SetSize(16, 16)
-	resizeHandle:SetPoint("BOTTOMRIGHT", -3, 3)
-	resizeHandle:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
-	resizeHandle:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
-	resizeHandle:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
-	resizeHandle:SetScript("OnMouseDown", function()
-		QTT:StartSizing("BOTTOMRIGHT")
-	end)
-	resizeHandle:SetScript("OnMouseUp", function()
-		QTT:StopMovingOrSizing()
-		XalsQuestCompassDB.width = QTT:GetWidth()
-		RefreshList()
-	end)
-	resizeHandle:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-		GameTooltip:SetText("Drag to resize")
-		GameTooltip:Show()
-	end)
-	resizeHandle:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	QTT.resizeHandle = resizeHandle
 
 	-- Active-route status (Stop X/Y + Skip/Cancel) -- live progress state,
 	-- so it stays on the window itself rather than living in the actions
@@ -2778,32 +2848,6 @@ local function CreateMainFrame()
 		flyoutMenu:Hide()
 	end)
 	QTT.untrackAllBtn = untrackAllBtn
-
-	-- Chevron trigger -- double down-chevron, bottom right corner, opens
-	-- the actions menu below the window. Built from plain text (not a
-	-- texture) so it renders in whatever font is active, with zero risk
-	-- of a missing/blank icon asset.
-	local chevronBtn = CreateFrame("Button", nil, QTT)
-	chevronBtn:SetSize(24, 24)
-	chevronBtn:SetPoint("BOTTOMRIGHT", QTT, "BOTTOMRIGHT", -30, Brand.SAFE_MARGIN)
-	local chevronText = chevronBtn:CreateFontString(nil, "OVERLAY")
-	chevronText:SetFontObject(smallFontObj)
-	chevronText:SetText("v\nv")
-	chevronText:SetSpacing(-6)
-	chevronText:SetJustifyH("CENTER")
-	chevronText:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
-	chevronText:SetAllPoints()
-	chevronBtn.text = chevronText
-	chevronBtn:SetScript("OnClick", function()
-		flyoutMenu:SetShown(not flyoutMenu:IsShown())
-	end)
-	chevronBtn:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-		GameTooltip:SetText("More actions")
-		GameTooltip:Show()
-	end)
-	chevronBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	QTT.chevronBtn = chevronBtn
 
 	QTT:SetScript("OnShow", function()
 		XQC.ApplyMinimizedState()
