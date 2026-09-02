@@ -1,5 +1,14 @@
 # Xal's Quest Compass - Changelog
 
+## 1.6.1 - September 1, 2026
+
+---
+
+Caught myself getting annoyed at my own addon the other day - the minimized bar kept popping up on my screen even when there was nothing sitting ready to turn in anywhere near me. That's backwards from the whole idea. This thing is supposed to save you a glance at your quest log, not become one more window you have to shove out of the way because it showed up uninvited. So I went and fixed it at the root instead of just papering over it - it should only ever show up now when there's actually something worth turning in wherever you are. Here's hoping it finally leaves you alone until it's actually supposed to. Thanks for sticking with Quest Compass - appreciate every one of you.
+
+### 🔧 Fixed
+- The minimized bar could pop up over a quest that wasn't even in your current zone, then just sit there showing nothing to turn in. It's now driven by the same zone-filtered list the window itself displays, so it only shows up for quests actually ready where you are.
+
 ## 1.6.0 - August 14, 2026
 
 ---
