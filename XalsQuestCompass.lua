@@ -217,7 +217,6 @@ local optionsPanel
 local rows = {}
 local ROW_WIDTH = 328 -- fallback used before the frame exists
 local lastReadyCount = 0
-local lastReadyCountAll = 0
 local currentNavQuestID = nil -- which quest we're currently pointing the player toward
 local currentDisplayIndex = 1 -- which ready quest (1 = closest) is currently shown in the single-quest display
 local UpdateRouteFooter -- forward-declared; assigned in the Route planning section, called from RefreshList
@@ -556,23 +555,6 @@ local function GetTurnInQuests(forceAllZones)
 	return quests
 end
 
--- A lightweight, zone-independent count used only to decide whether to
--- auto-show the window. This deliberately ignores the "current zone
--- only" display filter -- a quest becoming ready in a different zone
--- should still alert you, even though it won't be listed until you
--- either travel there or switch the window to "All Zones".
-local function CountAllReadyQuests()
-	local count = 0
-	local numEntries = Compat_GetNumEntries()
-	for i = 1, numEntries do
-		local questID, _, isHeader, isHidden = Compat_GetQuestEntry(i)
-		if questID and not isHeader and not isHidden and questID > 0 and Compat_IsComplete(questID) then
-			count = count + 1
-		end
-	end
-	return count
-end
-
 -------------------------------------------------
 -- Rows
 -------------------------------------------------
@@ -787,13 +769,15 @@ function RefreshList()
 
 	local quests = GetTurnInQuests()
 
-	-- Auto-show if a new quest became ready anywhere, regardless of the
-	-- zone filter -- while the window was closed.
-	local allReadyCount = CountAllReadyQuests()
-	if XalsQuestCompassDB.readySound and allReadyCount > lastReadyCountAll then
+	-- Auto-show if a new quest became ready in the current zone (or
+	-- anywhere, if the "current zone only" filter is off) while the
+	-- window was closed. Uses the same zone-filtered list the window
+	-- itself displays, so the alert can never fire over a quest the
+	-- window wouldn't actually show.
+	if XalsQuestCompassDB.readySound and #quests > lastReadyCount then
 		pcall(PlaySound, SOUNDKIT.READY_CHECK, "Master")
 	end
-	if XalsQuestCompassDB.autoShow and (allReadyCount > lastReadyCountAll) and not QTT:IsShown() then
+	if XalsQuestCompassDB.autoShow and (#quests > lastReadyCount) and not QTT:IsShown() then
 		-- Auto-Show always minimizes on its own, regardless of whatever
 		-- state was last left in - the whole point is popping up something
 		-- unobtrusive instead of the full window taking over at a random
@@ -803,7 +787,6 @@ function RefreshList()
 		QTT:Show()
 		XQC.ApplyMinimizedState()
 	end
-	lastReadyCountAll = allReadyCount
 
 	-- Optionally auto-navigate to the nearest one when the set of ready
 	-- quests changes and nothing is currently being navigated to.
