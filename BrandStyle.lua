@@ -25,9 +25,15 @@ XQC.BrandStyle = {}
 local Brand = XQC.BrandStyle
 
 -- ── Colours (r, g, b) ─────────────────────────────────────────
-Brand.ACCENT = { 0.72, 0.55, 0.22 }   -- warm bronze-gold
-Brand.GOLD   = { 0.60, 0.47, 0.30 }   -- secondary/body text tone
-Brand.BG     = { 0.035, 0.035, 0.035, 1 } -- near-black, fully opaque
+-- New default as of 2026-09-02 (same rebrand as Xpedited Routes - see
+-- project_addon_visual_brand.md): deep orange accent + dark indigo
+-- background, replacing the old bronze-gold/near-black look. Quest Compass
+-- has no "Classic" style option, so this changes the shared constant
+-- directly rather than adding a second one - it cascades to every Title/
+-- DrawBorder/MakeButton/MakeCheckbox call in the addon.
+Brand.ACCENT = { 0.72, 0.30, 0.0 }    -- deep, dark, burnt orange (was warm bronze-gold)
+Brand.GOLD   = { 0.60, 0.47, 0.30 }   -- secondary/body text tone (unchanged)
+Brand.BG     = { 0.03, 0.028, 0.06, 1 } -- dark indigo leaning purple, #08070f (was near-black)
 Brand.LINE_THICKNESS = 2 -- minimum for ANY border/divider - never go below this
 Brand.SAFE_MARGIN = 14
 
@@ -97,7 +103,9 @@ end
 -- ── MakeButton()  ─ Xal's Compendium's flat button.
 local BTN_BORDER = { Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1 }
 local BTN_BORDER_SELECTED = { Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1 }
-local BTN_LABEL_UNSELECTED = { 0.95, 0.60, 0.10 }
+-- Was its own separate amber-orange before 2026-09-02 - now the same
+-- Brand.ACCENT as everything else, one unified orange app-wide.
+local BTN_LABEL_UNSELECTED = Brand.ACCENT
 
 function Brand.MakeButton(parent, text, w, h, onClick)
 	local S = Brand.GetElvUISkins()
