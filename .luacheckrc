@@ -78,6 +78,7 @@ read_globals = {
     "GameTooltip_AddNormalLine",
     "IsShiftKeyDown",
     "print",
+    "GetRealZoneText",
 }
 
 -- Textures/backdrop tables and long chained SetPoint calls read as "unused
