@@ -21,6 +21,7 @@ local LIGHT_BLUE = { 0.55, 0.8, 1 }
 local GREY = { 0.6, 0.6, 0.6 }
 local MUTED_GREY = { 0.588, 0.569, 0.659 } -- #9691a8, confirmed mockup color for the quest row's distance/tag text
 local MOCKUP_GREEN = { 0.11, 0.56, 0.31 } -- darkened from #2ecc71 (2026-09-02, still too light) - GREEN above is brighter/lighter, wrong for this row
+local ZONE_BLUE = { 0.00, 0.44, 0.87 } -- #0070DD, Blizzard's standard shaman class color
 
 -------------------------------------------------
 -- Compat (Retail vs Classic)
@@ -297,7 +298,12 @@ rowBodyFontObj:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\Inter-Re
 -- client only honors shadow settings baked into the font object itself for
 -- a font-object-linked FontString, not instance-level overrides.
 local headerCountFontObj = CreateFont("XalsQuestCompassHeaderCountFont")
-headerCountFontObj:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\Inter-Regular.ttf", 12, "")
+-- 14, not 12 - at a reduced window scale (the size slider), a 12px font
+-- shrinks small enough that texture minification visibly washes its color
+-- out toward white (confirmed via pixel sampling: the intended color
+-- rendered as RGB 160,255,255 on screen instead of the actual 87,221,255
+-- set in code) - a bigger base size survives that scaling with less blur.
+headerCountFontObj:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\Inter-Regular.ttf", 14, "")
 headerCountFontObj:SetShadowOffset(1, -1)
 headerCountFontObj:SetShadowColor(0, 0, 0, 1)
 
@@ -521,6 +527,15 @@ local function GetTurnInQuests(forceAllZones)
 		local playerMapInfo = C_Map.GetMapInfo(playerMapID)
 		playerZoneName = playerMapInfo and playerMapInfo.name
 	end
+	-- C_Map can come back with an unhelpful name (or the wrong sub-map
+	-- entirely) inside dynamic content like a scenario or rare-hunt event -
+	-- GetRealZoneText() is the old, blunt "what zone is the player actually
+	-- standing in" API and isn't thrown off by that, so it's used as a
+	-- cross-check/fallback rather than trusting C_Map alone.
+	local realZoneText = GetRealZoneText and GetRealZoneText()
+	if realZoneText and realZoneText ~= "" then
+		playerZoneName = realZoneText
+	end
 
 	for i = 1, numEntries do
 		local questID, title, isHeader, isHidden, frequency = Compat_GetQuestEntry(i)
@@ -547,7 +562,7 @@ local function GetTurnInQuests(forceAllZones)
 				end
 
 				local include = true
-				if zoneOnly and playerMapID and questID ~= currentNavQuestID and not info.ttt_classicSameZone then
+				if zoneOnly and playerMapID and not info.ttt_classicSameZone then
 					include = false
 				end
 				if include then table.insert(quests, info) end
@@ -577,12 +592,23 @@ local function GetTurnInQuests(forceAllZones)
 				end
 
 				local include = true
-				if zoneOnly and playerMapID and questID ~= currentNavQuestID then
-					local wOk, waypointMapID = pcall(C_QuestLog.GetNextWaypoint, questID)
-					-- If we can't determine a location, show it anyway rather than
-					-- risk hiding a quest that's actually ready right here.
-					if wOk and waypointMapID and waypointMapID ~= playerMapID then
-						include = false
+				if zoneOnly and playerMapID then
+					-- Zone-only means zone-only - if nothing here can actually
+					-- confirm the quest is in the player's current zone, it's
+					-- excluded, not shown "just in case." Checks the quest log's
+					-- own zone header first (known right here, no API call, and
+					-- it's what the row itself displays as its zone tag - so the
+					-- filter can never disagree with what's on screen), then
+					-- GetNextWaypoint as a second, independent confirmation.
+					include = false
+					if info.zoneName and playerZoneName and info.zoneName == playerZoneName then
+						include = true
+					end
+					if not include then
+						local wOk, waypointMapID = pcall(C_QuestLog.GetNextWaypoint, questID)
+						if wOk and waypointMapID and waypointMapID == playerMapID then
+							include = true
+						end
 					end
 				end
 
@@ -888,13 +914,26 @@ function RefreshList()
 
 	if not QTT:IsShown() then return end
 
-	if currentDisplayIndex > #quests then currentDisplayIndex = #quests end
-	if currentDisplayIndex < 1 then currentDisplayIndex = 1 end
+	if #quests == 0 then
+		currentDisplayIndex = 0
+	else
+		if currentDisplayIndex > #quests then currentDisplayIndex = #quests end
+		if currentDisplayIndex < 1 then currentDisplayIndex = 1 end
+	end
 
 	-- Minimized: title/count/Close stay exactly where they are (same bar as
 	-- expanded, per the confirmed mockup) - only the quest row itself is
-	-- skipped, since questArea is hidden by ApplyMinimizedState.
+	-- skipped, since questArea is hidden by ApplyMinimizedState. If nothing's
+	-- ready anymore (e.g. the zone filter dropped the last quest), the bar
+	-- has no reason to still be sitting on screen - hide it outright (not
+	-- just faded) so IsShown() correctly reports false and the auto-show
+	-- check further up can pop it back open the moment something's ready
+	-- again, the same way it did the first time.
 	if XalsQuestCompassDB.minimized then
+		if #quests == 0 then
+			QTT:Hide()
+			return
+		end
 		QTT.countText:SetText(string.format("%d/%d ready", currentDisplayIndex, #quests))
 		SyncWindowWidth()
 		return
@@ -2700,7 +2739,7 @@ local function CreateMainFrame()
 	QTT.countText:SetPoint("LEFT", QTT.title, "RIGHT", 10, -1)
 	QTT.countText:SetJustifyH("LEFT")
 	QTT.countText:SetWordWrap(false)
-	QTT.countText:SetTextColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	QTT.countText:SetTextColor(ZONE_BLUE[1], ZONE_BLUE[2], ZONE_BLUE[3])
 
 	-- Empty-state text
 	QTT.noQuestsText = QTT:CreateFontString(nil, "OVERLAY", "GameFontDisableLarge")
