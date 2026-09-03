@@ -1,5 +1,22 @@
 # Xal's Quest Compass - Changelog
 
+## 1.7.0 - September 2, 2026
+
+---
+
+I sat down to give Quest Compass the same look I've been rolling out across the family, and once I saw it running I realized the old bordered window just wasn't it anymore - too boxy, too much stuff sitting between you and the actual quest info. So I stripped it down: no border, no background box, just the quest text floating cleanly over the game world in the new orange-and-indigo look. Each ready quest gets its own soft-fading row now instead of the old striped list, and clicking the title itself minimizes the window - no more hunting for a tiny +/- button. While I had things open I also caught a couple of real annoyances: Navigate wasn't turning itself back off when you clicked it a second time, and the on-screen tracking arrow could silently fail to clear. Both fixed. Thanks for sticking with Quest Compass through the redesign - appreciate every one of you.
+
+### 🆕 New
+- Redesigned the quest window in the new deep-orange-and-indigo look, with no border or background box - just floating text over the game world.
+- Ready quests now show as clean, borderless rows with a soft fade instead of the old striped list.
+- Click the window's title to minimize/expand it - the separate +/- button is gone.
+
+### 🔧 Fixed
+- Clicking Navigate a second time on a quest you were already navigating to now actually turns navigation off.
+- Fixed the on-screen tracking arrow sometimes silently failing to clear.
+- Fixed the minimized bar's ready count occasionally overlapping the Close button.
+- Fixed a couple of settings-window checkbox display issues (a section header overlapping a checkbox, and a checkbox's left border getting clipped).
+
 ## 1.6.1 - September 1, 2026
 
 ---
