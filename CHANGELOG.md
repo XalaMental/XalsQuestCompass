@@ -1,5 +1,16 @@
 # Xal's Quest Compass - Changelog
 
+## 1.7.1 - September 3, 2026
+
+---
+
+Right after the redesign went out, I logged in and caught the minimized bar tracking a quest that wasn't even in my zone. Honestly not sure if that's a fresh bug from the redesign or something that's been lurking this whole time and I just never noticed it - either way, it took a few real attempts to actually run it down, but I'm confident it's fixed now. While I was in there I also gave the ready-count number its own color so it actually stands out next to the header instead of blending in. Thanks for sticking with Quest Compass - appreciate every one of you.
+
+### 🔧 Fixed
+- The zone-only filter could still show a quest from a completely different zone in some cases - it now only ever shows quests it can actually confirm are in your current zone.
+- The minimized bar could get stuck showing "1/0 ready" and never disappear once the last ready quest left your zone. It now hides itself the moment nothing's ready, and pops back up on its own the moment something is.
+- Changed the minimized bar's ready count to the shaman class blue so it stands out next to the title instead of blending in.
+
 ## 1.7.0 - September 2, 2026
 
 ---
