@@ -27,6 +27,7 @@ read_globals = {
     "LibStub",
     "CreateFont",
     "CreateVector2D",
+    "CreateColor",
     "C_Map",
     "C_QuestLog",
     "C_TaskQuest",
