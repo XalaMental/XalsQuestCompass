@@ -1,5 +1,19 @@
 # Xal's Quest Compass - Changelog
 
+## 1.8.0 - September 12, 2026
+
+---
+
+When I first brought Quest Compass over to the new visual style I've been rolling out across all my addons, I got it live and took a second look and realized I'd been short-sighted about it - it still felt boxy, obtrusive, not actually what I wanted. So this update is me going back through and pushing things toward something genuinely minimal. You still get all the same control over how it behaves, but the whole lineup of my addons should end up taking a lot less of your screen than they used to. Hope you like where this is heading as much as I do. Thanks for being a part of the Xal family.
+
+### 🆕 New
+- New default minimized style: a small floating icon instead of the bar. Dark and out of the way when nothing's ready, glows the moment a quest is, and hovering it shows exactly what's waiting - click it to jump straight into the full window. The bar is still available as an option in settings, along with an icon size slider and precise X/Y position controls.
+- Added Cinzel Bold and Inter Regular (the fonts from the recent redesign) as choices in the Font settings.
+
+### 🔧 Fixed
+- Replaced the Font and Font Outline dropdown menus with a properly styled one matching the rest of the addon.
+- The Blizzard AddOns-list settings page is now a short welcome page with an "Open Settings" button instead of a second full copy of every setting.
+
 ## 1.7.1 - September 3, 2026
 
 ---
