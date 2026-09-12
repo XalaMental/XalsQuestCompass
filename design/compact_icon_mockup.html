@@ -1,0 +1,355 @@
+<title>Compact Icon Mode</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;500;600&display=swap">
+<style>
+:root{
+  --bg-void:#08070f;
+  --panel:#15111f;
+  --panel-edge:#241a2e;
+  --accent:#c25a12;
+  --accent-bright:#e8791f;
+  --shaman:#2e9dff;
+  --ink:#eae6f0;
+  --ink-dim:#9691a8;
+  --ink-faint:#6b6580;
+  --glow:#ff9a3d;
+}
+*{box-sizing:border-box;}
+body{
+  margin:0;
+  background:
+    radial-gradient(ellipse 900px 500px at 20% 10%, #14261f 0%, transparent 60%),
+    radial-gradient(ellipse 700px 500px at 85% 30%, #1a1030 0%, transparent 55%),
+    linear-gradient(180deg, #0c1210 0%, var(--bg-void) 45%, #0a0812 100%);
+  color:var(--ink);
+  font-family:'Inter',system-ui,sans-serif;
+  min-height:100vh;
+  padding:56px 24px 80px;
+}
+.wrap{max-width:920px;margin:0 auto;}
+header{margin-bottom:56px;}
+.eyebrow{
+  font-family:'Inter',sans-serif;
+  font-size:12px;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  color:var(--accent-bright);
+  font-weight:600;
+  margin:0 0 10px;
+}
+h1{
+  font-family:'Cinzel',serif;
+  font-weight:700;
+  font-size:clamp(28px,4vw,40px);
+  margin:0 0 14px;
+  text-wrap:balance;
+  color:#f4e9d8;
+  text-shadow:0 2px 0 rgba(0,0,0,.6);
+}
+.lede{
+  max-width:62ch;
+  font-size:15px;
+  line-height:1.6;
+  color:var(--ink-dim);
+  margin:0;
+}
+
+.demo-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:20px;
+  margin-bottom:20px;
+}
+@media (max-width:760px){ .demo-grid{grid-template-columns:1fr;} }
+
+.stage{
+  position:relative;
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(60,90,70,.35), transparent 55%),
+    radial-gradient(ellipse at 75% 70%, rgba(40,30,60,.3), transparent 55%),
+    #0d1a14;
+  border:1px solid #1c2a20;
+  border-radius:4px;
+  min-height:260px;
+  padding:22px;
+  overflow:hidden;
+}
+.stage-label{
+  font-size:11px;
+  letter-spacing:.1em;
+  text-transform:uppercase;
+  color:var(--ink-faint);
+  font-weight:600;
+  margin:0 0 4px;
+}
+.stage-caption{
+  font-size:13px;
+  color:var(--ink-dim);
+  line-height:1.55;
+  max-width:40ch;
+  margin:0 0 28px;
+}
+
+/* the icon itself - a small round compass medallion, matches the addon's
+   existing Icon.png treatment: bronze/orange ring, dark recessed field */
+.qc-icon{
+  position:absolute;
+  width:40px;
+  height:40px;
+  border-radius:50%;
+  cursor:pointer;
+}
+.qc-icon .ring{
+  position:absolute; inset:0;
+  border-radius:50%;
+  background:
+    radial-gradient(circle at 35% 30%, #3a2412, #17100a 70%);
+  border:2px solid #5a3410;
+  box-shadow:
+    inset 0 0 0 1px rgba(255,180,110,.25),
+    0 2px 6px rgba(0,0,0,.6);
+}
+.qc-icon .glyph{
+  position:absolute; inset:0;
+  display:flex; align-items:center; justify-content:center;
+  font-family:'Cinzel',serif;
+  font-size:16px;
+  font-weight:700;
+  color:var(--accent-bright);
+}
+.qc-icon.idle{ left:36px; top:150px; }
+.qc-icon.idle .glyph{ color:#8a7a68; }
+
+.qc-icon.ready{ left:36px; top:150px; }
+.qc-icon.ready .ring{
+  border-color:var(--accent);
+  animation:pulse 2.2s ease-in-out infinite;
+}
+@keyframes pulse{
+  0%,100%{ box-shadow:inset 0 0 0 1px rgba(255,180,110,.25), 0 0 10px 2px rgba(255,154,61,.35), 0 2px 6px rgba(0,0,0,.6); }
+  50%{ box-shadow:inset 0 0 0 1px rgba(255,180,110,.4), 0 0 20px 7px rgba(255,154,61,.65), 0 2px 6px rgba(0,0,0,.6); }
+}
+@media (prefers-reduced-motion:reduce){ .qc-icon.ready .ring{ animation:none; box-shadow:inset 0 0 0 1px rgba(255,180,110,.4), 0 0 14px 4px rgba(255,154,61,.5); } }
+
+/* WoW-style tooltip: dark panel, thin accent border, backdrop-style corner
+   pips are skipped (not a texture we can fake honestly) - a plain bordered
+   box is exactly what GameTooltip:SetBackdrop already looks like. */
+.wow-tooltip{
+  position:absolute;
+  left:90px; top:144px;
+  width:230px;
+  background:#0c0a12;
+  border:1px solid #4a3a1e;
+  border-radius:3px;
+  padding:10px 12px;
+  box-shadow:0 4px 14px rgba(0,0,0,.55);
+}
+.wow-tooltip .tt-title{
+  font-family:'Cinzel',serif;
+  font-size:14px;
+  font-weight:700;
+  color:var(--accent-bright);
+  margin:0 0 6px;
+}
+.wow-tooltip .tt-row{
+  font-size:12.5px;
+  color:var(--ink);
+  margin:0 0 2px;
+  display:flex; justify-content:space-between; gap:10px;
+}
+.wow-tooltip .tt-zone{
+  font-size:11.5px;
+  color:var(--ink-faint);
+  margin:6px 0 0;
+  padding-top:6px;
+  border-top:1px solid #241a2e;
+}
+.tt-count{ color:var(--shaman); font-variant-numeric:tabular-nums; }
+
+/* --- position controls demo --- */
+.controls-stage{
+  background:#0d0b16;
+  border:1px solid var(--panel-edge);
+  border-radius:4px;
+  padding:26px 28px;
+}
+.coord-row{
+  display:flex;
+  align-items:center;
+  gap:26px;
+  flex-wrap:wrap;
+}
+.coord-field{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+.coord-field label{
+  font-size:11px;
+  letter-spacing:.1em;
+  text-transform:uppercase;
+  color:var(--ink-faint);
+  font-weight:600;
+}
+.coord-control{
+  display:flex;
+  align-items:stretch;
+  background:#1a1626;
+  border:1px solid var(--panel-edge);
+  border-radius:3px;
+  overflow:hidden;
+}
+.coord-control input{
+  width:76px;
+  background:transparent;
+  border:none;
+  color:var(--ink);
+  font-family:'Inter',sans-serif;
+  font-variant-numeric:tabular-nums;
+  font-size:15px;
+  font-weight:600;
+  text-align:center;
+  padding:8px 4px;
+}
+.coord-control input:focus{ outline:2px solid var(--shaman); outline-offset:-2px; }
+.nudge{
+  display:flex;
+  flex-direction:column;
+  border-left:1px solid var(--panel-edge);
+}
+.nudge button{
+  appearance:none;
+  border:none;
+  background:transparent;
+  color:var(--ink-dim);
+  width:22px;
+  height:17px;
+  display:flex; align-items:center; justify-content:center;
+  cursor:pointer;
+  font-size:9px;
+  line-height:1;
+}
+.nudge button:first-child{ border-bottom:1px solid var(--panel-edge); }
+.nudge button:hover{ background:#241d33; color:var(--accent-bright); }
+.nudge button:active{ background:#2c2340; }
+
+.step-note{
+  margin-top:18px;
+  font-size:12.5px;
+  color:var(--ink-faint);
+  display:flex; align-items:center; gap:8px;
+}
+.step-note .pill{
+  font-size:10.5px;
+  letter-spacing:.05em;
+  text-transform:uppercase;
+  font-weight:600;
+  color:var(--shaman);
+  border:1px solid rgba(46,157,255,.4);
+  border-radius:20px;
+  padding:2px 9px;
+}
+
+.legend{
+  display:flex;
+  gap:22px;
+  margin-top:36px;
+  flex-wrap:wrap;
+}
+.legend-item{
+  display:flex;
+  gap:10px;
+  align-items:flex-start;
+  font-size:13px;
+  color:var(--ink-dim);
+  max-width:26ch;
+  line-height:1.5;
+}
+.legend-item .num{
+  font-family:'Cinzel',serif;
+  color:var(--accent-bright);
+  font-weight:700;
+  font-size:13px;
+  flex-shrink:0;
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Xal's Quest Compass &mdash; compact icon mode</p>
+    <h1>One glyph instead of a bar</h1>
+    <p class="lede">A single floating icon replaces the minimized bar. Dark and idle when nothing's ready, a warm glow the instant a quest is, and the full ready list on hover &mdash; click to jump straight into the panel.</p>
+  </header>
+
+  <div class="demo-grid">
+    <div class="stage">
+      <p class="stage-label">State &middot; idle</p>
+      <p class="stage-caption">Nothing ready to turn in. No glow, no text, barely there &mdash; the smallest footprint the addon can have on screen.</p>
+      <div class="qc-icon idle">
+        <div class="ring"></div>
+        <div class="glyph">&#10148;</div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <p class="stage-label">State &middot; ready (hovered)</p>
+      <p class="stage-caption">One or more quests are ready. The ring glows and gently pulses; hovering shows exactly what's waiting.</p>
+      <div class="qc-icon ready">
+        <div class="ring"></div>
+        <div class="glyph">&#10148;</div>
+      </div>
+      <div class="wow-tooltip">
+        <p class="tt-title">Quest Compass</p>
+        <p class="tt-row"><span>Ready to turn in</span><span class="tt-count">2</span></p>
+        <p class="tt-row"><span>Turn Back the Surge</span><span>210 yd</span></p>
+        <p class="tt-row"><span>Proof is in the Ooze</span><span>1,140 yd</span></p>
+        <p class="tt-zone">The Coiled Isle &middot; click to open</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls-stage">
+    <p class="stage-label">Settings &middot; icon position</p>
+    <p class="stage-caption" style="margin-bottom:22px;">Drag the icon to roughly where you want it, then fine-tune with these &mdash; each arrow click nudges one step, no chance of a drag overshooting past the spot you meant.</p>
+    <div class="coord-row">
+      <div class="coord-field">
+        <label for="xf">X position</label>
+        <div class="coord-control">
+          <input id="xf" type="text" value="248" inputmode="numeric">
+          <div class="nudge">
+            <button type="button" aria-label="Increase X" data-target="xf" data-dir="1">&#9650;</button>
+            <button type="button" aria-label="Decrease X" data-target="xf" data-dir="-1">&#9660;</button>
+          </div>
+        </div>
+      </div>
+      <div class="coord-field">
+        <label for="yf">Y position</label>
+        <div class="coord-control">
+          <input id="yf" type="text" value="-86" inputmode="numeric">
+          <div class="nudge">
+            <button type="button" aria-label="Increase Y" data-target="yf" data-dir="1">&#9650;</button>
+            <button type="button" aria-label="Decrease Y" data-target="yf" data-dir="-1">&#9660;</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="step-note"><span class="pill">try it</span> the arrows above are live &mdash; click one</p>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><span class="num">01</span> Bar mode stays available as an option &mdash; this becomes the new default, not a replacement.</div>
+    <div class="legend-item"><span class="num">02</span> Separate from the minimap button; a movable icon anchored anywhere on screen.</div>
+    <div class="legend-item"><span class="num">03</span> Glow only, no number badge on the icon itself &mdash; the count lives in the tooltip.</div>
+    <div class="legend-item"><span class="num">04</span> Click opens the full panel directly, same as clicking the bar's title does today.</div>
+  </div>
+</div>
+
+<script>
+document.querySelectorAll('.nudge button').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    var input = document.getElementById(btn.dataset.target);
+    var step = 1;
+    var val = parseInt(input.value, 10) || 0;
+    input.value = val + (step * parseInt(btn.dataset.dir, 10));
+  });
+});
+</script>
