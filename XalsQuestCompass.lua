@@ -155,6 +155,8 @@ local FONT_OPTIONS = {
 	{ key = "MORPHEUS", name = "Morpheus", path = "Fonts\\MORPHEUS.TTF" },
 	{ key = "CUSTOM", name = "Simply Sans Bold", path = "Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\CustomFont.ttf" },
 	{ key = "FIRASANS", name = "Fira Sans Medium", path = "Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf" },
+	{ key = "CINZEL", name = "Cinzel Bold", path = "Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\Cinzel-Bold.ttf" },
+	{ key = "INTER", name = "Inter Regular", path = "Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\Inter-Regular.ttf" },
 }
 
 local OUTLINE_OPTIONS = {
@@ -203,6 +205,9 @@ local defaults = {
 	customFontColor = { 1, 0.82, 0 },
 	elvuiSkinning = false,
 	fadeWhenEmpty = true,
+	compactStyle = "icon", -- "icon" (default) or "bar" (the original minimized bar)
+	iconPos = { x = -300, y = 250 },
+	iconSize = 64,
 	windowScale = 0.7,
 	autoTurnIn = false,
 	autoAccept = false,
@@ -857,8 +862,22 @@ end
 
 function XQC.ToggleMinimized()
 	XalsQuestCompassDB.minimized = not XalsQuestCompassDB.minimized
+	if XalsQuestCompassDB.minimized and XalsQuestCompassDB.compactStyle == "icon" and XQC.compactIcon then
+		-- Icon mode: the window disappears entirely and the compact icon
+		-- takes over as the on-screen indicator, same as when Auto-Show
+		-- first pops it up - RefreshList populates the icon's glow/tooltip
+		-- immediately instead of waiting for the next natural event.
+		QTT:Hide()
+		RefreshList()
+		return
+	end
 	XQC.ApplyMinimizedState()
 	if not XalsQuestCompassDB.minimized then
+		if XQC.compactIcon then
+			XQC.compactIcon:Hide()
+			XQC.compactIcon.glow:Hide()
+			XQC.compactIcon.glowAnim:Stop()
+		end
 		RefreshList()
 	end
 end
@@ -883,18 +902,31 @@ function RefreshList()
 	-- window was closed. Uses the same zone-filtered list the window
 	-- itself displays, so the alert can never fire over a quest the
 	-- window wouldn't actually show.
+	-- Whether ANY compact display (the icon, or the minimized bar) is
+	-- currently on screen - used instead of a bare QTT:IsShown() check
+	-- below, since in icon mode QTT itself stays hidden the whole time and
+	-- the icon is what's actually showing.
+	local function IsCompactShown()
+		if XQC.compactIcon and XQC.compactIcon:IsShown() then return true end
+		return QTT:IsShown()
+	end
+
 	if XalsQuestCompassDB.readySound and #quests > lastReadyCount then
 		pcall(PlaySound, SOUNDKIT.READY_CHECK, "Master")
 	end
-	if XalsQuestCompassDB.autoShow and (#quests > lastReadyCount) and not QTT:IsShown() then
+	if XalsQuestCompassDB.autoShow and (#quests > lastReadyCount) and not IsCompactShown() then
 		-- Auto-Show always minimizes on its own, regardless of whatever
 		-- state was last left in - the whole point is popping up something
 		-- unobtrusive instead of the full window taking over at a random
 		-- moment. A manual open (minimap button, slash command) is
 		-- unaffected by this and just respects whatever's already set.
 		XalsQuestCompassDB.minimized = true
-		QTT:Show()
-		XQC.ApplyMinimizedState()
+		if XalsQuestCompassDB.compactStyle == "icon" and XQC.compactIcon then
+			QTT:Hide()
+		else
+			QTT:Show()
+			XQC.ApplyMinimizedState()
+		end
 	end
 
 	-- Optionally auto-navigate to the nearest one when the set of ready
@@ -912,6 +944,14 @@ function RefreshList()
 	end
 	lastReadyCount = #quests
 
+	-- Minimized + icon mode: QTT itself is never shown here - only the
+	-- compact icon is - so this branches off before the QTT:IsShown() guard
+	-- below, which would otherwise always bail out in this mode.
+	if XalsQuestCompassDB.minimized and XalsQuestCompassDB.compactStyle == "icon" and XQC.compactIcon then
+		XQC.UpdateCompactIcon(quests)
+		return
+	end
+
 	if not QTT:IsShown() then return end
 
 	if #quests == 0 then
@@ -921,14 +961,14 @@ function RefreshList()
 		if currentDisplayIndex < 1 then currentDisplayIndex = 1 end
 	end
 
-	-- Minimized: title/count/Close stay exactly where they are (same bar as
-	-- expanded, per the confirmed mockup) - only the quest row itself is
-	-- skipped, since questArea is hidden by ApplyMinimizedState. If nothing's
-	-- ready anymore (e.g. the zone filter dropped the last quest), the bar
-	-- has no reason to still be sitting on screen - hide it outright (not
-	-- just faded) so IsShown() correctly reports false and the auto-show
-	-- check further up can pop it back open the moment something's ready
-	-- again, the same way it did the first time.
+	-- Minimized (bar style): title/count/Close stay exactly where they are
+	-- (same bar as expanded, per the confirmed mockup) - only the quest row
+	-- itself is skipped, since questArea is hidden by ApplyMinimizedState.
+	-- If nothing's ready anymore (e.g. the zone filter dropped the last
+	-- quest), the bar has no reason to still be sitting on screen - hide it
+	-- outright (not just faded) so IsShown() correctly reports false and
+	-- the auto-show check further up can pop it back open the moment
+	-- something's ready again, the same way it did the first time.
 	if XalsQuestCompassDB.minimized then
 		if #quests == 0 then
 			QTT:Hide()
@@ -1425,307 +1465,100 @@ local function CreateOptionsPanel()
 	scrollChild:SetSize(340, 700) -- generously tall; scrolling handles the rest, so this never needs to be exact
 	scrollFrame:SetScrollChild(scrollChild)
 
-	-- Right-edge anchor is relative to the actual PANEL, not scrollChild's
-	-- fixed 340px width - scrollChild is just a scroll-region placeholder,
-	-- the real available width is the panel's (native Settings frame vs a
-	-- narrower context can differ). A fixed-width-relative anchor here was
-	-- the root cause of text overflowing/misaligning depending on context.
-	local function AnchorRight(fs, x)
-		fs:SetPoint("RIGHT", panel, "RIGHT", x, 0)
-	end
+	-- Same welcome splash as the standalone window's own Home tab (icon,
+	-- intro paragraphs, dedication) - this native Blizzard AddOns page had
+	-- none of it before, just the bare controls below. "Open Settings"
+	-- nestled in the gap between the body text and the dedication (same
+	-- blank space the standalone Home tab already has there) is this page's
+	-- own way to reach the standalone window - the addon's real, primary
+	-- settings menu (same one the minimap button opens) - since this native
+	-- page is the slower-to-navigate, secondary way in.
+	local ACCENT_HEX = string.format("ff%02x%02x%02x",
+		math.floor(Brand.ACCENT[1] * 255 + 0.5), math.floor(Brand.ACCENT[2] * 255 + 0.5), math.floor(Brand.ACCENT[3] * 255 + 0.5))
+	local function Highlight(text) return "|c" .. ACCENT_HEX .. text .. "|r" end
+	local function PurpleHighlight(text) return "|cffa335ee" .. text .. "|r" end
+	local HOME_BODY_WIDTH = 300
 
-	-- Brand.MakeCheckbox has no built-in .Text region (unlike native
-	-- UICheckButtonTemplate), so this centralizes the label-creation
-	-- boilerplate that would otherwise get retyped at every checkbox in
-	-- this panel. Anchoring is left to the caller (offsets vary per site),
-	-- this only builds the checkbox + its label and wires state/toggle.
-	local function MakeCheckboxWithLabel(text, isChecked, onToggle)
-		local cb = Brand.MakeCheckbox(scrollChild, 22)
-		local label = scrollChild:CreateFontString(nil, "OVERLAY")
-		label:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_LABEL_FONT_SIZE, "")
-		label:SetTextColor(0.85, 0.85, 0.85)
-		label:SetPoint("LEFT", cb, "RIGHT", 6, 0)
-		AnchorRight(label, -30)
-		label:SetJustifyH("LEFT")
-		label:SetWordWrap(true)
-		label:SetText(text)
-		cb:SetChecked(isChecked)
-		cb.OnToggle = onToggle
-		return cb
-	end
+	local homeIcon = scrollChild:CreateTexture(nil, "ARTWORK")
+	homeIcon:SetSize(120, 120)
+	-- Centered on the real PANEL width, not scrollChild's own narrow fixed
+	-- width (340px) - scrollChild sits flush-left inside the actual visible
+	-- area, so anchoring center-point content to it (instead of panel)
+	-- centered everything inside that narrow box, not the real page,
+	-- reading as pushed off to the left (caught via screenshot).
+	homeIcon:SetPoint("TOP", panel, "TOP", 0, 0)
+	homeIcon:SetTexture("Interface\\AddOns\\" .. ADDON_NAME .. "\\Textures\\MinimapIcon_v3.png")
 
-	-- In-content button (not header chrome - Routes' header is title + close
-	-- only) since this panel is reused both natively and in the standalone
-	-- window, and only Quest Compass needs this control at all.
-	local openBtn = Brand.MakeButton(scrollChild, "Open Window", 140, 24, function()
-		if QTT then
-			QTT:Show()
-		else
-			print("|cffff4444Xal's Quest Compass:|r the window didn't initialize. Try /reload.")
-		end
-	end)
-	openBtn:SetPoint("TOPLEFT", 2, 0)
-	panel.openBtn = openBtn
-
-	local subtitle = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	subtitle:SetPoint("TOPLEFT", openBtn, "BOTTOMLEFT", 0, -16)
-	AnchorRight(subtitle, -30)
-	subtitle:SetJustifyH("LEFT")
-	subtitle:SetWordWrap(true)
-	BumpFont(subtitle, PANEL_DESC_FONT_SIZE)
-	subtitle:SetText("Toggle the quest window with /xqc or the minimap button. Click Navigate on any quest for an on-screen arrow.")
-
-	local autoShowCB = MakeCheckboxWithLabel(
-		"Automatically open the window when a quest becomes ready to turn in",
-		XalsQuestCompassDB.autoShow,
-		function(self) XalsQuestCompassDB.autoShow = self:GetChecked() and true or false end)
-	autoShowCB:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", -2, -24)
-	panel.autoShowCB = autoShowCB
-
-	local autoNavCB = MakeCheckboxWithLabel(
-		"Automatically point the arrow at the nearest turn-in when none is selected",
-		XalsQuestCompassDB.autoNavigateNearest,
-		function(self) XalsQuestCompassDB.autoNavigateNearest = self:GetChecked() and true or false end)
-	autoNavCB:SetPoint("TOPLEFT", autoShowCB, "BOTTOMLEFT", 0, -8)
-	panel.autoNavCB = autoNavCB
-
-	local zoneOnlyCB = MakeCheckboxWithLabel(
-		"Only show quests ready to turn in within my current zone",
-		XalsQuestCompassDB.currentZoneOnly,
-		function(self)
-			XalsQuestCompassDB.currentZoneOnly = self:GetChecked() and true or false
-			if QTT and QTT.zoneToggleBtn then QTT.zoneToggleBtn:UpdateText() end
-			RefreshList()
-		end)
-	zoneOnlyCB:SetPoint("TOPLEFT", autoNavCB, "BOTTOMLEFT", 0, -8)
-	panel.zoneOnlyCB = zoneOnlyCB
-
-	local minimapCB = MakeCheckboxWithLabel(
-		"Show minimap button",
-		not (XalsQuestCompassDB.minimap and XalsQuestCompassDB.minimap.hide),
-		function(self)
-			if XQC.MinimapButton and XQC.MinimapButton.SetShown then
-				XQC.MinimapButton:SetShown(self:GetChecked())
-			end
-		end)
-	minimapCB:SetPoint("TOPLEFT", zoneOnlyCB, "BOTTOMLEFT", 0, -8)
-	panel.minimapCB = minimapCB
-
-	local fadeCB = MakeCheckboxWithLabel(
-		"Fade window when nothing's ready to turn in",
-		XalsQuestCompassDB.fadeWhenEmpty,
-		function(self)
-			XalsQuestCompassDB.fadeWhenEmpty = self:GetChecked() and true or false
-			RefreshList()
-		end)
-	fadeCB:SetPoint("TOPLEFT", minimapCB, "BOTTOMLEFT", 0, -8)
-	panel.fadeCB = fadeCB
-
-	-- Automation section
-	local automationTitle = Brand.FS(scrollChild, "Automation", "Fonts\\FRIZQT__.TTF", 16, "",
+	local homeLead = Brand.FS(scrollChild, "Thanks for using Xal's Quest Compass.", "Fonts\\FRIZQT__.TTF", 20, "",
 		Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
-	automationTitle:SetPoint("TOPLEFT", fadeCB, "BOTTOMLEFT", 2, -22)
-	local automationDivider = CreateDivider(scrollChild)
-	automationDivider:SetPoint("TOPLEFT", automationTitle, "BOTTOMLEFT", 0, -6)
-	automationDivider:SetPoint("RIGHT", scrollChild, "RIGHT", -2, 0)
+	homeLead:SetPoint("TOP", homeIcon, "BOTTOM", 0, -10)
+	homeLead:SetWidth(HOME_BODY_WIDTH)
+	homeLead:SetJustifyH("CENTER")
+	homeLead:SetWordWrap(true)
 
-	local autoTurnInCB = MakeCheckboxWithLabel(
-		"Automatically turn in quests with no reward choice to make",
-		XalsQuestCompassDB.autoTurnIn,
-		function(self) XalsQuestCompassDB.autoTurnIn = self:GetChecked() and true or false end)
-	autoTurnInCB:SetPoint("TOPLEFT", automationTitle, "BOTTOMLEFT", -2, -22)
-	panel.autoTurnInCB = autoTurnInCB
+	local homeRule = Brand.T(scrollChild, 0, 0, 60, Brand.LINE_THICKNESS,
+		Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1)
+	homeRule:ClearAllPoints()
+	homeRule:SetPoint("TOP", homeLead, "BOTTOM", 0, -10)
 
-	local autoAcceptCB = MakeCheckboxWithLabel(
-		"Automatically accept new quests offered by NPCs",
-		XalsQuestCompassDB.autoAccept,
-		function(self) XalsQuestCompassDB.autoAccept = self:GetChecked() and true or false end)
-	autoAcceptCB:SetPoint("TOPLEFT", autoTurnInCB, "BOTTOMLEFT", 0, -8)
-	panel.autoAcceptCB = autoAcceptCB
+	local homeBody1 = Brand.FS(scrollChild,
+		"Quests pile up complete in your log and it's easy to lose track of which ones are actually ready to hand in. I built this addon to fix exactly that - a clean list of what's ready, sorted by distance, with one click to "
+			.. Highlight("navigate") .. " and one click to " .. Highlight("track") .. ".",
+		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 13, "", 0.85, 0.85, 0.85)
+	homeBody1:SetPoint("TOP", homeRule, "BOTTOM", 0, -14)
+	homeBody1:SetWidth(HOME_BODY_WIDTH)
+	homeBody1:SetJustifyH("CENTER")
+	homeBody1:SetWordWrap(true)
 
-	local automationNote = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	automationNote:SetPoint("TOPLEFT", autoAcceptCB, "BOTTOMLEFT", 24, -4)
-	AnchorRight(automationNote, -30)
-	automationNote:SetJustifyH("LEFT")
-	automationNote:SetWordWrap(true)
-	BumpFont(automationNote, PANEL_DESC_FONT_SIZE)
-	automationNote:SetText("Skips quests with more than one reward to choose from, quests that cost money to turn in, and a few quest types known to behave oddly (escort, item-start, PvP-flagged) - those still open normally so you can handle them yourself. Hold Shift to pause automation at any time.")
+	local homeBody2 = Brand.FS(scrollChild,
+		Highlight("Route All") .. " takes it further: one button plans a route through everything you're ready to turn in and walks you through it, stop by stop.",
+		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 13, "", 0.85, 0.85, 0.85)
+	homeBody2:SetPoint("TOP", homeBody1, "BOTTOM", 0, -12)
+	homeBody2:SetWidth(HOME_BODY_WIDTH)
+	homeBody2:SetJustifyH("CENTER")
+	homeBody2:SetWordWrap(true)
 
-	local readySoundCB = MakeCheckboxWithLabel(
-		"Play a sound when a quest becomes ready to turn in",
-		XalsQuestCompassDB.readySound,
-		function(self) XalsQuestCompassDB.readySound = self:GetChecked() and true or false end)
-	readySoundCB:SetPoint("TOPLEFT", automationNote, "BOTTOMLEFT", -24, -10)
-	panel.readySoundCB = readySoundCB
-
-	-- Appearance section
-	local appearanceTitle = Brand.FS(scrollChild, "Appearance", "Fonts\\FRIZQT__.TTF", 16, "",
-		Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
-	appearanceTitle:SetPoint("TOPLEFT", readySoundCB, "BOTTOMLEFT", 2, -22)
-	local appearanceDivider = CreateDivider(scrollChild)
-	appearanceDivider:SetPoint("TOPLEFT", appearanceTitle, "BOTTOMLEFT", 0, -6)
-	appearanceDivider:SetPoint("RIGHT", scrollChild, "RIGHT", -2, 0)
-
-	local fontLabel = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	fontLabel:SetPoint("TOPLEFT", appearanceTitle, "BOTTOMLEFT", 0, -22)
-	BumpFont(fontLabel, PANEL_LABEL_FONT_SIZE)
-	fontLabel:SetText("Font")
-
-	local fontDropdown = CreateFrame("Frame", "XalsQuestCompassFontDropdown", scrollChild, "UIDropDownMenuTemplate")
-	fontDropdown:SetPoint("TOPLEFT", fontLabel, "BOTTOMLEFT", -16, -4)
-	UIDropDownMenu_SetWidth(fontDropdown, 190)
-	local function RefreshFontDropdownText()
-		UIDropDownMenu_SetText(fontDropdown, GetFontOption(XalsQuestCompassDB.fontKey).name)
-	end
-	UIDropDownMenu_Initialize(fontDropdown, function(self, level)
-		for _, opt in ipairs(FONT_OPTIONS) do
-			local info = UIDropDownMenu_CreateInfo()
-			info.text = opt.name
-			info.checked = (XalsQuestCompassDB.fontKey == opt.key)
-			info.func = function()
-				XalsQuestCompassDB.fontKey = opt.key
-				RefreshFontDropdownText()
-				ApplyFontSettings()
-			end
-			UIDropDownMenu_AddButton(info, level)
-		end
+	local openSettingsBtn = Brand.MakeButton(scrollChild, "Open Settings", 150, 26, function()
+		if XQC.OpenOptions then XQC.OpenOptions() end
 	end)
-	panel.fontDropdown = fontDropdown
-	panel.RefreshFontDropdownText = RefreshFontDropdownText
+	openSettingsBtn:SetPoint("TOP", homeBody2, "BOTTOM", 0, -22)
 
-	local outlineLabel = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	outlineLabel:SetPoint("TOPLEFT", fontDropdown, "BOTTOMLEFT", 16, -4)
-	BumpFont(outlineLabel, PANEL_LABEL_FONT_SIZE)
-	outlineLabel:SetText("Font Outline")
-
-	local outlineDropdown = CreateFrame("Frame", "XalsQuestCompassOutlineDropdown", scrollChild, "UIDropDownMenuTemplate")
-	outlineDropdown:SetPoint("TOPLEFT", outlineLabel, "BOTTOMLEFT", -16, -4)
-	UIDropDownMenu_SetWidth(outlineDropdown, 190)
-	local function RefreshOutlineDropdownText()
-		UIDropDownMenu_SetText(outlineDropdown, GetOutlineOption(XalsQuestCompassDB.outlineKey).name)
-	end
-	UIDropDownMenu_Initialize(outlineDropdown, function(self, level)
-		for _, opt in ipairs(OUTLINE_OPTIONS) do
-			local info = UIDropDownMenu_CreateInfo()
-			info.text = opt.name
-			info.checked = (XalsQuestCompassDB.outlineKey == opt.key)
-			info.func = function()
-				XalsQuestCompassDB.outlineKey = opt.key
-				RefreshOutlineDropdownText()
-				ApplyFontSettings()
-			end
-			UIDropDownMenu_AddButton(info, level)
-		end
-	end)
-	panel.outlineDropdown = outlineDropdown
-	panel.RefreshOutlineDropdownText = RefreshOutlineDropdownText
-
-	local sizeSlider = CreateFrame("Slider", "XalsQuestCompassFontSizeSlider", scrollChild, "OptionsSliderTemplate")
-	sizeSlider:SetPoint("TOPLEFT", outlineDropdown, "BOTTOMLEFT", 16, -20)
-	sizeSlider:SetMinMaxValues(10, 22)
-	sizeSlider:SetValueStep(1)
-	sizeSlider:SetObeyStepOnDrag(true)
-	sizeSlider:SetWidth(190)
-	BumpFont(_G[sizeSlider:GetName() .. "Low"], PANEL_LABEL_FONT_SIZE)
-	BumpFont(_G[sizeSlider:GetName() .. "High"], PANEL_LABEL_FONT_SIZE)
-	_G[sizeSlider:GetName() .. "Low"]:SetText("10")
-	_G[sizeSlider:GetName() .. "High"]:SetText("22")
-	-- Own FontString for the live value, NOT the template's built-in "Text"
-	-- region - that region did not reliably render here (stayed invisible
-	-- across two attempts at repositioning it), and OptionsSliderTemplate's
-	-- internals have a documented history of shifting/being altered across
-	-- WoW versions. A FontString this code creates and owns directly is
-	-- guaranteed to render regardless of what the template does internally.
-	local sizeValueText = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	sizeValueText:SetPoint("BOTTOM", sizeSlider, "TOP", 0, 4)
-	BumpFont(sizeValueText, PANEL_LABEL_FONT_SIZE)
-	sizeValueText:SetTextColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
-	local function UpdateSizeSliderText()
-		sizeValueText:SetText("Font Size: " .. (XalsQuestCompassDB.fontSize or 13))
-	end
-	sizeSlider:SetValue(XalsQuestCompassDB.fontSize or 13)
-	UpdateSizeSliderText()
-	sizeSlider:SetScript("OnValueChanged", function(self, value)
-		value = math.floor(value + 0.5)
-		XalsQuestCompassDB.fontSize = value
-		ApplyFontSettings()
-		UpdateSizeSliderText()
-	end)
-	panel.sizeSlider = sizeSlider
-	panel.UpdateSizeSliderText = UpdateSizeSliderText
-
-	local shadowCB = MakeCheckboxWithLabel(
-		"Text shadow",
-		XalsQuestCompassDB.fontShadow,
-		function(self)
-			XalsQuestCompassDB.fontShadow = self:GetChecked() and true or false
-			ApplyFontSettings()
-		end)
-	shadowCB:SetPoint("TOPLEFT", sizeSlider, "BOTTOMLEFT", -16, -30)
-	panel.shadowCB = shadowCB
-
-	local classColorCB = MakeCheckboxWithLabel(
-		"Use my class color for quest titles",
-		XalsQuestCompassDB.useClassColor,
-		function(self)
-			XalsQuestCompassDB.useClassColor = self:GetChecked() and true or false
-			RefreshList()
-		end)
-	classColorCB:SetPoint("TOPLEFT", shadowCB, "BOTTOMLEFT", 0, -8)
-	panel.classColorCB = classColorCB
-
-	local scaleSlider = CreateFrame("Slider", "XalsQuestCompassScaleSlider", scrollChild, "OptionsSliderTemplate")
-	scaleSlider:SetPoint("TOPLEFT", classColorCB, "BOTTOMLEFT", 16, -30)
-	scaleSlider:SetMinMaxValues(0.7, 1.5)
-	scaleSlider:SetValueStep(0.05)
-	scaleSlider:SetObeyStepOnDrag(true)
-	scaleSlider:SetWidth(190)
-	BumpFont(_G[scaleSlider:GetName() .. "Low"], PANEL_LABEL_FONT_SIZE)
-	BumpFont(_G[scaleSlider:GetName() .. "High"], PANEL_LABEL_FONT_SIZE)
-	_G[scaleSlider:GetName() .. "Low"]:SetText("0.7")
-	_G[scaleSlider:GetName() .. "High"]:SetText("1.5")
-	-- Own FontString, not the template's built-in "Text" region - see the
-	-- matching comment on sizeSlider above for why.
-	local scaleValueText = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	scaleValueText:SetPoint("BOTTOM", scaleSlider, "TOP", 0, 4)
-	BumpFont(scaleValueText, PANEL_LABEL_FONT_SIZE)
-	scaleValueText:SetTextColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
-	local function UpdateScaleSliderText()
-		scaleValueText:SetText(string.format("Window Scale: %.2f", XalsQuestCompassDB.windowScale or 1.0))
-	end
-	scaleSlider:SetValue(XalsQuestCompassDB.windowScale or 1.0)
-	UpdateScaleSliderText()
-	scaleSlider:SetScript("OnValueChanged", function(self, value)
-		value = math.floor(value * 20 + 0.5) / 20
-		XalsQuestCompassDB.windowScale = value
-		ApplyFontSettings()
-		UpdateScaleSliderText()
-	end)
-	panel.scaleSlider = scaleSlider
-	panel.UpdateScaleSliderText = UpdateScaleSliderText
+	local homeDedication = Brand.FS(scrollChild,
+		"This one's for " .. PurpleHighlight('"Jo"')
+			.. " \194\183 my go-to traveling companion, dungeons and everything else. \"Oops, dang it, didn't turn that in\" one too many times, so I built this to help you out in-game the way you make my adventuring a whole lot more pleasant.\nHere you go, friend.",
+		"Fonts\\FRIZQT__.TTF", 12, "", Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	homeDedication:SetPoint("TOP", openSettingsBtn, "BOTTOM", 0, -22)
+	homeDedication:SetWidth(HOME_BODY_WIDTH)
+	homeDedication:SetJustifyH("CENTER")
+	homeDedication:SetWordWrap(true)
 
 	panel:SetScript("OnShow", function()
-		-- Blizzard's ScrollFrame does not reset to the top on its own - without
-		-- this, reopening the panel can land mid-scroll, making the top few
-		-- settings (subtitle, auto-show, auto-navigate, zone-only, minimap
-		-- button, the "Automation" header) look like they've vanished when
-		-- they're just scrolled out of view above the visible area.
+		-- Blizzard's ScrollFrame does not reset to the top on its own -
+		-- without this, reopening the panel could land mid-scroll.
 		scrollFrame:SetVerticalScroll(0)
-		autoShowCB:SetChecked(XalsQuestCompassDB.autoShow)
-		autoNavCB:SetChecked(XalsQuestCompassDB.autoNavigateNearest)
-		zoneOnlyCB:SetChecked(XalsQuestCompassDB.currentZoneOnly)
-		minimapCB:SetChecked(not (XalsQuestCompassDB.minimap and XalsQuestCompassDB.minimap.hide))
-		autoTurnInCB:SetChecked(XalsQuestCompassDB.autoTurnIn)
-		autoAcceptCB:SetChecked(XalsQuestCompassDB.autoAccept)
-		readySoundCB:SetChecked(XalsQuestCompassDB.readySound)
-		shadowCB:SetChecked(XalsQuestCompassDB.fontShadow)
-		classColorCB:SetChecked(XalsQuestCompassDB.useClassColor)
-		sizeSlider:SetValue(XalsQuestCompassDB.fontSize or 13)
-		scaleSlider:SetValue(XalsQuestCompassDB.windowScale or 1.0)
-		UpdateSizeSliderText()
-		UpdateScaleSliderText()
-		RefreshFontDropdownText()
-		RefreshOutlineDropdownText()
+		-- scrollChild's declared size (340x700, a generous guess from when
+		-- this held a full page of checkboxes/sliders) is now far taller
+		-- than this short splash actually needs, which is exactly what was
+		-- forcing the scrollbar to show even though nothing needs scrolling -
+		-- WoW sizes the scroll range off the declared height, not the real
+		-- content extent. Sized here (once real content exists to measure)
+		-- to the splash's actual bottom instead.
+		C_Timer.After(0, function()
+			-- Width too, not just height - scrollChild's own declared width
+			-- (340px) is also what the ScrollFrame clips to, so content
+			-- centered on the wider real panel (see homeIcon's anchor above)
+			-- would otherwise sit partly outside scrollChild's own clip
+			-- region and get cut off.
+			local panelWidth = panel:GetWidth()
+			if panelWidth and panelWidth > 0 then
+				scrollChild:SetWidth(panelWidth)
+			end
+			local top = scrollChild:GetTop()
+			local bottom = homeDedication:GetBottom()
+			if top and bottom then
+				scrollChild:SetHeight(math.max(top - bottom + 24, 1))
+			end
+		end)
 	end)
 
 	if Settings and Settings.RegisterCanvasLayoutCategory then
@@ -2304,47 +2137,33 @@ local function BuildStandaloneOptionsWindow()
 
 	-- Card 1: Font (dropdown)
 	local fontDesc = AddCardHeader(fontScrollChild, nil, -32, "Font", "Choose the typeface used throughout the quest window.")
-	local fontDropdown = CreateFrame("Frame", "XalsQuestCompassFontDropdown", fontScrollChild, "UIDropDownMenuTemplate")
+	local fontDropdown = Brand.MakeDropdown(fontScrollChild, 190)
 	fontDropdown:SetPoint("TOPLEFT", fontDesc, "BOTTOMLEFT", 0, -8)
-	UIDropDownMenu_SetWidth(fontDropdown, 190)
+	fontDropdown:SetOptions(FONT_OPTIONS)
 	local function RefreshFontDropdownText()
-		UIDropDownMenu_SetText(fontDropdown, GetFontOption(XalsQuestCompassDB.fontKey).name)
+		fontDropdown:SetValue(XalsQuestCompassDB.fontKey)
 	end
-	UIDropDownMenu_Initialize(fontDropdown, function(self, level)
-		for _, opt in ipairs(FONT_OPTIONS) do
-			local info = UIDropDownMenu_CreateInfo()
-			info.text = opt.name
-			info.checked = (XalsQuestCompassDB.fontKey == opt.key)
-			info.func = function()
-				XalsQuestCompassDB.fontKey = opt.key
-				RefreshFontDropdownText()
-				ApplyFontSettings()
-			end
-			UIDropDownMenu_AddButton(info, level)
-		end
-	end)
+	RefreshFontDropdownText()
+	fontDropdown.OnSelect = function(key)
+		XalsQuestCompassDB.fontKey = key
+		RefreshFontDropdownText()
+		ApplyFontSettings()
+	end
 
 	-- Card 2: Font Outline (dropdown)
 	local outlineDesc = AddCardHeader(fontScrollChild, fontDropdown, CARD_GAP, "Font Outline", "Choose how the text is outlined, for readability against busy backgrounds.")
-	local outlineDropdown = CreateFrame("Frame", "XalsQuestCompassOutlineDropdown", fontScrollChild, "UIDropDownMenuTemplate")
+	local outlineDropdown = Brand.MakeDropdown(fontScrollChild, 190)
 	outlineDropdown:SetPoint("TOPLEFT", outlineDesc, "BOTTOMLEFT", 0, -8)
-	UIDropDownMenu_SetWidth(outlineDropdown, 190)
+	outlineDropdown:SetOptions(OUTLINE_OPTIONS)
 	local function RefreshOutlineDropdownText()
-		UIDropDownMenu_SetText(outlineDropdown, GetOutlineOption(XalsQuestCompassDB.outlineKey).name)
+		outlineDropdown:SetValue(XalsQuestCompassDB.outlineKey)
 	end
-	UIDropDownMenu_Initialize(outlineDropdown, function(self, level)
-		for _, opt in ipairs(OUTLINE_OPTIONS) do
-			local info = UIDropDownMenu_CreateInfo()
-			info.text = opt.name
-			info.checked = (XalsQuestCompassDB.outlineKey == opt.key)
-			info.func = function()
-				XalsQuestCompassDB.outlineKey = opt.key
-				RefreshOutlineDropdownText()
-				ApplyFontSettings()
-			end
-			UIDropDownMenu_AddButton(info, level)
-		end
-	end)
+	RefreshOutlineDropdownText()
+	outlineDropdown.OnSelect = function(key)
+		XalsQuestCompassDB.outlineKey = key
+		RefreshOutlineDropdownText()
+		ApplyFontSettings()
+	end
 
 	-- Card 3: Font Size (slider)
 	local sizeDesc = AddCardHeader(fontScrollChild, outlineDropdown, CARD_GAP, "Font Size", "Adjust the size of the text used throughout the quest window.")
@@ -2475,7 +2294,181 @@ local function BuildStandaloneOptionsWindow()
 		UpdateDisplayScaleText()
 	end)
 
-	local elvDesc = AddCardHeader(displayPanel, scaleSlider, CARD_GAP, "ElvUI Skinning (Experimental)",
+	local compactDesc = AddCardHeader(displayPanel, scaleSlider, CARD_GAP, "Compact Alert",
+		"Choose how the addon lets you know a quest is ready while the window is minimized.")
+	local compactCB = Brand.MakeCheckbox(displayPanel, 22)
+	compactCB:SetPoint("TOPLEFT", compactDesc, "BOTTOMLEFT", -2, -12)
+	local compactLabel = displayPanel:CreateFontString(nil, "OVERLAY")
+	compactLabel:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_LABEL_FONT_SIZE, "")
+	compactLabel:SetTextColor(0.95, 0.60, 0.10)
+	compactLabel:SetPoint("LEFT", compactCB, "RIGHT", 6, 0)
+	compactLabel:SetText("Show as a floating icon (uncheck for the bar)")
+
+	-- X/Y position fields, only meaningful in icon mode - a small number
+	-- field with its own up/down nudge arrows, not a slider. A slider (or
+	-- plain dragging) can overshoot the exact spot wanted; a single arrow
+	-- click always moves by exactly one step, confirmed as the preferred
+	-- control for pixel-precise placement.
+	local ICON_NUDGE_STEP = 1
+	local posLabel = displayPanel:CreateFontString(nil, "OVERLAY")
+	posLabel:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_LABEL_FONT_SIZE, "")
+	posLabel:SetTextColor(0.85, 0.85, 0.85)
+	posLabel:SetPoint("TOPLEFT", compactCB, "BOTTOMLEFT", 2, -26)
+	posLabel:SetText("Icon Position (drag the icon on screen, or nudge it here)")
+
+	local function MakeCoordField(anchorTo, axisLabel)
+		local box = CreateFrame("Frame", nil, displayPanel, "BackdropTemplate")
+		box:SetSize(70, 26)
+		box:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, -18)
+		box:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
+		box:SetBackdropColor(0.08, 0.08, 0.1, 0.9)
+		box:SetBackdropBorderColor(Brand.ACCENT[1] * 0.6, Brand.ACCENT[2] * 0.6, Brand.ACCENT[3] * 0.6, 1)
+
+		local axisText = displayPanel:CreateFontString(nil, "OVERLAY")
+		axisText:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 11, "")
+		axisText:SetTextColor(0.6, 0.6, 0.6, 1)
+		axisText:SetPoint("BOTTOMLEFT", box, "TOPLEFT", 2, 2)
+		axisText:SetText(axisLabel)
+
+		local edit = CreateFrame("EditBox", nil, box)
+		edit:SetPoint("LEFT", 6, 0)
+		edit:SetPoint("RIGHT", -20, 0)
+		edit:SetHeight(20)
+		edit:SetAutoFocus(false)
+		edit:SetNumeric(false)
+		edit:SetMaxLetters(6)
+		edit:SetFontObject(GameFontHighlightSmall)
+		edit:SetJustifyH("LEFT")
+		edit:SetScript("OnEscapePressed", edit.ClearFocus)
+
+		-- Blizzard's own scrollbar arrow textures (UIPanelScrollFrameTemplate's
+		-- ScrollUpButton/ScrollDownButton use these same four states) - real,
+		-- confirmed assets rather than a guessed texture path.
+		local nudgeUp = CreateFrame("Button", nil, box)
+		nudgeUp:SetSize(16, 12)
+		nudgeUp:SetPoint("TOPRIGHT", 0, 0)
+		nudgeUp:SetNormalTexture("Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Up")
+		nudgeUp:SetPushedTexture("Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Down")
+		nudgeUp:SetHighlightTexture("Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Highlight")
+
+		local nudgeDown = CreateFrame("Button", nil, box)
+		nudgeDown:SetSize(16, 12)
+		nudgeDown:SetPoint("BOTTOMRIGHT", 0, 0)
+		nudgeDown:SetNormalTexture("Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Up")
+		nudgeDown:SetPushedTexture("Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Down")
+		nudgeDown:SetHighlightTexture("Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Highlight")
+
+		box.edit = edit
+		box.nudgeUp = nudgeUp
+		box.nudgeDown = nudgeDown
+		return box
+	end
+
+	local xField = MakeCoordField(posLabel, "X")
+	local yField = MakeCoordField(posLabel, "Y")
+	yField:ClearAllPoints()
+	yField:SetPoint("TOPLEFT", xField, "TOPRIGHT", 16, 0)
+
+	local function GetIconPos()
+		return XalsQuestCompassDB.iconPos or defaults.iconPos
+	end
+
+	function XQC.SyncIconPositionFields()
+		local pos = GetIconPos()
+		xField.edit:SetText(tostring(math.floor(pos.x + 0.5)))
+		yField.edit:SetText(tostring(math.floor(pos.y + 0.5)))
+	end
+
+	local function ApplyFieldPosition()
+		local pos = GetIconPos()
+		local x = tonumber(xField.edit:GetText()) or pos.x
+		local y = tonumber(yField.edit:GetText()) or pos.y
+		XQC.SetIconPosition(x, y)
+	end
+
+	xField.edit:SetScript("OnEnterPressed", function(self) self:ClearFocus(); ApplyFieldPosition() end)
+	xField.edit:SetScript("OnEditFocusLost", ApplyFieldPosition)
+	yField.edit:SetScript("OnEnterPressed", function(self) self:ClearFocus(); ApplyFieldPosition() end)
+	yField.edit:SetScript("OnEditFocusLost", ApplyFieldPosition)
+
+	xField.nudgeUp:SetScript("OnClick", function()
+		local pos = GetIconPos()
+		XQC.SetIconPosition(pos.x + ICON_NUDGE_STEP, pos.y)
+	end)
+	xField.nudgeDown:SetScript("OnClick", function()
+		local pos = GetIconPos()
+		XQC.SetIconPosition(pos.x - ICON_NUDGE_STEP, pos.y)
+	end)
+	yField.nudgeUp:SetScript("OnClick", function()
+		local pos = GetIconPos()
+		XQC.SetIconPosition(pos.x, pos.y + ICON_NUDGE_STEP)
+	end)
+	yField.nudgeDown:SetScript("OnClick", function()
+		local pos = GetIconPos()
+		XQC.SetIconPosition(pos.x, pos.y - ICON_NUDGE_STEP)
+	end)
+
+	-- Icon size - same slider template/pattern as the Window Scale and Font
+	-- Size sliders elsewhere in this panel, not a new control type.
+	local iconSizeSlider = CreateFrame("Slider", "XalsQuestCompassIconSizeSlider", displayPanel, "OptionsSliderTemplate")
+	iconSizeSlider:SetPoint("TOPLEFT", xField, "BOTTOMLEFT", 0, -40)
+	iconSizeSlider:SetMinMaxValues(24, 96)
+	iconSizeSlider:SetValueStep(2)
+	iconSizeSlider:SetObeyStepOnDrag(true)
+	iconSizeSlider:SetWidth(190)
+	BumpFont(_G[iconSizeSlider:GetName() .. "Low"], PANEL_LABEL_FONT_SIZE)
+	BumpFont(_G[iconSizeSlider:GetName() .. "High"], PANEL_LABEL_FONT_SIZE)
+	_G[iconSizeSlider:GetName() .. "Low"]:SetText("24")
+	_G[iconSizeSlider:GetName() .. "High"]:SetText("96")
+	local iconSizeValueText = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	iconSizeValueText:SetPoint("BOTTOM", iconSizeSlider, "TOP", 0, 4)
+	BumpFont(iconSizeValueText, PANEL_LABEL_FONT_SIZE)
+	iconSizeValueText:SetTextColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	local function UpdateIconSizeText()
+		iconSizeValueText:SetText("Icon Size: " .. (XalsQuestCompassDB.iconSize or defaults.iconSize))
+	end
+	iconSizeSlider:SetValue(XalsQuestCompassDB.iconSize or defaults.iconSize)
+	UpdateIconSizeText()
+	iconSizeSlider:SetScript("OnValueChanged", function(self, value)
+		value = math.floor(value + 0.5)
+		XQC.SetIconSize(value)
+		UpdateIconSizeText()
+	end)
+
+	local function UpdateCompactControlsAvailability()
+		local isIcon = XalsQuestCompassDB.compactStyle == "icon"
+		posLabel:SetShown(isIcon)
+		xField:SetShown(isIcon)
+		yField:SetShown(isIcon)
+		iconSizeSlider:SetShown(isIcon)
+		iconSizeValueText:SetShown(isIcon)
+	end
+
+	compactCB:SetChecked(XalsQuestCompassDB.compactStyle == "icon")
+	compactCB.OnToggle = function(self)
+		XalsQuestCompassDB.compactStyle = self:GetChecked() and "icon" or "bar"
+		UpdateCompactControlsAvailability()
+		-- Switch whichever compact display is currently on screen over to
+		-- the newly chosen style immediately, instead of waiting for the
+		-- next natural refresh.
+		if XalsQuestCompassDB.minimized then
+			if XQC.compactIcon then
+				XQC.compactIcon:Hide()
+				XQC.compactIcon.glow:Hide()
+				XQC.compactIcon.glowAnim:Stop()
+			end
+			QTT:Hide()
+			if XalsQuestCompassDB.compactStyle == "bar" then
+				QTT:Show()
+				XQC.ApplyMinimizedState()
+			end
+			RefreshList()
+		end
+	end
+	UpdateCompactControlsAvailability()
+	XQC.SyncIconPositionFields()
+
+	local elvDesc = AddCardHeader(displayPanel, iconSizeSlider, CARD_GAP - 12, "ElvUI Skinning (Experimental)",
 		"If you use ElvUI, the main quest window can defer to ElvUI's own look instead of Xal's default style. Requires ElvUI to be installed. Changes apply after /reload. This is new and not widely tested yet - if something looks off with it on, let Xal know.")
 	local elvCB = Brand.MakeCheckbox(displayPanel, 22)
 	elvCB:SetPoint("TOPLEFT", elvDesc, "BOTTOMLEFT", -2, -12)
@@ -2512,6 +2505,11 @@ local function BuildStandaloneOptionsWindow()
 	displayPanel:SetScript("OnShow", function()
 		scaleSlider:SetValue(XalsQuestCompassDB.windowScale or 1.0)
 		UpdateDisplayScaleText()
+		compactCB:SetChecked(XalsQuestCompassDB.compactStyle == "icon")
+		UpdateCompactControlsAvailability()
+		XQC.SyncIconPositionFields()
+		iconSizeSlider:SetValue(XalsQuestCompassDB.iconSize or defaults.iconSize)
+		UpdateIconSizeText()
 		elvCB:SetChecked(XalsQuestCompassDB.elvuiSkinning)
 		UpdateElvCBAvailability()
 	end)
@@ -2912,6 +2910,149 @@ local function CreateMainFrame()
 	QTT:SetScript("OnSizeChanged", OnWindowResized)
 end
 
+-------------------------------------------------
+-- Compact icon (the default minimized-state display - see CompactStyle)
+-------------------------------------------------
+
+-- The floating alert icon: dark and inert with nothing ready, a soft
+-- pulsing glow the instant something is, tooltip shows exactly what's
+-- ready without opening the window, click jumps straight into the full
+-- panel. Deliberately separate from the minimap button (MinimapButton.lua) -
+-- that one's fixed to the minimap and always visible; this one floats
+-- anywhere on screen and only shows up when it actually has something to
+-- say. Reuses the same art as the minimap button rather than shipping a
+-- second icon asset.
+local function CreateCompactIcon()
+	local Brand = XQC.BrandStyle
+	local icon = CreateFrame("Button", "XalsQuestCompassCompactIcon", UIParent)
+	local iconSize = XalsQuestCompassDB.iconSize or defaults.iconSize
+	icon:SetSize(iconSize, iconSize)
+	icon:SetFrameStrata("MEDIUM")
+	icon:SetMovable(true)
+	icon:EnableMouse(true)
+	icon:RegisterForDrag("LeftButton")
+	icon:Hide()
+	XQC.compactIcon = icon
+
+	local pos = XalsQuestCompassDB.iconPos or defaults.iconPos
+	icon:SetPoint("CENTER", UIParent, "CENTER", pos.x, pos.y)
+
+	-- Glow sits behind the icon texture, additive-blended so it reads as
+	-- light rather than a flat colored circle - same technique as the
+	-- game's own loot/quest-turn-in sparkle effects. Hidden entirely (not
+	-- just faded) when nothing's ready, since an idle glow would defeat
+	-- the point of a quiet, minimal alert.
+	local glow = icon:CreateTexture(nil, "BACKGROUND")
+	glow:SetTexture("Interface\\Cooldown\\star4")
+	glow:SetBlendMode("ADD")
+	glow:SetSize(iconSize * 1.875, iconSize * 1.875)
+	glow:SetPoint("CENTER")
+	glow:SetVertexColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	glow:Hide()
+	icon.glow = glow
+
+	local glowAnim = glow:CreateAnimationGroup()
+	glowAnim:SetLooping("BOUNCE")
+	local glowAlpha = glowAnim:CreateAnimation("Alpha")
+	glowAlpha:SetFromAlpha(0.35)
+	glowAlpha:SetToAlpha(0.85)
+	glowAlpha:SetDuration(1.1)
+	glowAlpha:SetSmoothing("IN_OUT")
+	icon.glowAnim = glowAnim
+
+	local tex = icon:CreateTexture(nil, "ARTWORK")
+	tex:SetAllPoints()
+	tex:SetTexture("Interface\\AddOns\\" .. ADDON_NAME .. "\\Textures\\MinimapIcon_v3.png")
+	icon.texture = tex
+
+	icon:SetScript("OnDragStart", function(self) self:StartMoving() end)
+	icon:SetScript("OnDragStop", function(self)
+		self:StopMovingOrSizing()
+		local cx, cy = self:GetCenter()
+		local ux, uy = UIParent:GetCenter()
+		local newPos = { x = cx - ux, y = cy - uy }
+		XalsQuestCompassDB.iconPos = newPos
+		if XQC.SyncIconPositionFields then XQC.SyncIconPositionFields() end
+	end)
+
+	icon:SetScript("OnClick", function()
+		XalsQuestCompassDB.minimized = false
+		icon:Hide()
+		glow:Hide()
+		glowAnim:Stop()
+		QTT:Show()
+		RefreshList()
+	end)
+
+	icon:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Quest Compass", Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+		local quests = icon.cachedQuests or {}
+		if #quests == 0 then
+			GameTooltip:AddLine("Nothing ready to turn in.", 0.6, 0.6, 0.6)
+		else
+			GameTooltip:AddDoubleLine("Ready to turn in", tostring(#quests), 1, 1, 1, ZONE_BLUE[1], ZONE_BLUE[2], ZONE_BLUE[3])
+			for i, q in ipairs(quests) do
+				if i > 5 then
+					GameTooltip:AddLine(string.format("...and %d more", #quests - 5), 0.6, 0.6, 0.6)
+					break
+				end
+				GameTooltip:AddDoubleLine(q.title or "Quest", FormatDistance(q), 1, 1, 1, 0.6, 0.6, 0.6)
+			end
+			GameTooltip:AddLine(" ")
+			GameTooltip:AddLine("Click to open", 0.6, 0.6, 0.6)
+		end
+		GameTooltip:Show()
+	end)
+	icon:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+	return icon
+end
+
+-- Applies the saved icon position to the icon frame and (if the settings
+-- panel's X/Y fields are currently built and visible) syncs their displayed
+-- values to match - shared by the drag handler above and the nudge-arrow
+-- settings controls, so neither one can drift out of sync with the other.
+function XQC.SetIconPosition(x, y)
+	XalsQuestCompassDB.iconPos = { x = x, y = y }
+	if XQC.compactIcon then
+		XQC.compactIcon:ClearAllPoints()
+		XQC.compactIcon:SetPoint("CENTER", UIParent, "CENTER", x, y)
+	end
+	if XQC.SyncIconPositionFields then XQC.SyncIconPositionFields() end
+end
+
+-- Resizes the icon and keeps the glow proportional to it (1.875x, the same
+-- ratio the icon was built with - a fixed-size glow would look undersized
+-- on a large icon and oversized on a small one).
+function XQC.SetIconSize(size)
+	XalsQuestCompassDB.iconSize = size
+	local icon = XQC.compactIcon
+	if not icon then return end
+	icon:SetSize(size, size)
+	icon.glow:SetSize(size * 1.875, size * 1.875)
+end
+
+-- Shows/hides the compact icon and its glow based on the current ready
+-- count, and caches the quest list for the tooltip to read on hover
+-- without recomputing it. Called from RefreshList, same as the minimized
+-- bar's own update - see the fail-closed "hide when empty" comment there
+-- for why this hides outright rather than just dimming.
+function XQC.UpdateCompactIcon(quests)
+	local icon = XQC.compactIcon
+	if not icon then return end
+	icon.cachedQuests = quests
+	if #quests == 0 then
+		icon:Hide()
+		icon.glow:Hide()
+		icon.glowAnim:Stop()
+		return
+	end
+	icon:Show()
+	icon.glow:Show()
+	if not icon.glowAnim:IsPlaying() then icon.glowAnim:Play() end
+end
+
 -- Minimap button now lives in MinimapButton.lua (LibDataBroker + LibDBIcon,
 -- same pattern as Routes/Courier) - see that file. XQC.ToggleWindow/
 -- XQC.OpenOptions above are what it calls back into.
@@ -3092,7 +3233,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
 					XQC.WhatsNew:CheckAndShow()
 				end
 			end
-			local steps = { InitDB, ApplyFontSettings, CreateMainFrame, RegisterMinimapButton, CreateOptionsPanel, ShowWhatsNew }
+			local steps = { InitDB, ApplyFontSettings, CreateMainFrame, CreateCompactIcon, RegisterMinimapButton, CreateOptionsPanel, ShowWhatsNew }
 			for _, step in ipairs(steps) do
 				local ok, err = pcall(step)
 				if not ok then
