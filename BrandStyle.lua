@@ -396,6 +396,128 @@ function Brand.ApplyBackground(f)
 	return bg
 end
 
+-- ── MakeDropdown()  ─ brand-styled dropdown, replaces Blizzard's native
+-- UIDropDownMenuTemplate everywhere in this addon (Font/Outline pickers) -
+-- the stock grey menu was the one remaining unstyled control against an
+-- otherwise fully custom panel, confirmed a bad clash via screenshot.
+-- Usage: dd = Brand.MakeDropdown(parent, width); dd:SetOptions({{key=,
+-- name=}, ...}); dd:SetValue(key); dd.OnSelect = function(key) ... end.
+-- The option list is its own top-level frame (not a child of the dropdown
+-- button) so it can draw above the settings panel's own scroll clipping,
+-- same reason Blizzard's native dropdowns also float above everything.
+function Brand.MakeDropdown(parent, width)
+	local height = 26
+	local dd = CreateFrame("Button", nil, parent, "BackdropTemplate")
+	PixelUtil.SetSize(dd, width, height)
+	dd:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8" })
+	dd:SetBackdropColor(0.1, 0.1, 0.1, 0.6)
+	Brand.DrawBorder(dd, 0)
+
+	local label = dd:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	label:SetPoint("LEFT", 10, 0)
+	label:SetPoint("RIGHT", -22, 0)
+	label:SetJustifyH("LEFT")
+	label:SetTextColor(0.9, 0.9, 0.9)
+	dd.label = label
+
+	local arrow = dd:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	arrow:SetPoint("RIGHT", -8, 0)
+	arrow:SetText("v")
+	arrow:SetTextColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+
+	dd:SetScript("OnEnter", function(self) self:SetBackdropColor(0.18, 0.18, 0.18, 0.75) end)
+	dd:SetScript("OnLeave", function(self) self:SetBackdropColor(0.1, 0.1, 0.1, 0.6) end)
+
+	-- List panel: sized to exactly fit its own rows (no fixed height that
+	-- could either clip a long list or leave dead space on a short one -
+	-- the "stuff overflowing" complaint against the native menu). Built
+	-- once, rows added/reused as SetOptions is called.
+	local list = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+	list:SetFrameStrata("FULLSCREEN_DIALOG")
+	Brand.ApplyBackground(list)
+	Brand.DrawBorder(list, 0)
+	list:Hide()
+
+	-- Invisible full-screen catcher so clicking anywhere outside the list
+	-- closes it - the standard way an addon fakes a native dropdown's
+	-- click-away-to-close behavior.
+	local catcher = CreateFrame("Frame", nil, UIParent)
+	catcher:SetAllPoints(UIParent)
+	catcher:SetFrameStrata("FULLSCREEN")
+	catcher:EnableMouse(true)
+	catcher:Hide()
+
+	local function CloseList()
+		list:Hide()
+		catcher:Hide()
+	end
+	catcher:SetScript("OnMouseDown", CloseList)
+
+	dd.options = {}
+	dd.rows = {}
+
+	local ROW_HEIGHT = 22
+	function dd:SetOptions(options)
+		self.options = options
+		for _, row in ipairs(self.rows) do row:Hide() end
+		for i, opt in ipairs(options) do
+			local row = self.rows[i]
+			if not row then
+				row = CreateFrame("Button", nil, list)
+				row:SetHeight(ROW_HEIGHT)
+				local hl = row:CreateTexture(nil, "HIGHLIGHT")
+				hl:SetAllPoints()
+				hl:SetColorTexture(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 0.25)
+				local text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+				text:SetPoint("LEFT", 8, 0)
+				text:SetPoint("RIGHT", -8, 0)
+				text:SetJustifyH("LEFT")
+				row.text = text
+				self.rows[i] = row
+			end
+			row:ClearAllPoints()
+			row:SetPoint("TOPLEFT", 2, -2 - (i - 1) * ROW_HEIGHT)
+			row:SetPoint("RIGHT", -2, 0)
+			row.text:SetText(opt.name)
+			row:SetScript("OnClick", function()
+				dd:SetValue(opt.key)
+				CloseList()
+				if dd.OnSelect then dd.OnSelect(opt.key) end
+			end)
+			row:Show()
+		end
+		list:SetHeight(#options * ROW_HEIGHT + 4)
+	end
+
+	function dd:SetValue(key)
+		self.value = key
+		for _, opt in ipairs(self.options) do
+			if opt.key == key then
+				label:SetText(opt.name)
+				return
+			end
+		end
+	end
+
+	function dd:GetValue()
+		return self.value
+	end
+
+	dd:SetScript("OnClick", function(self)
+		if list:IsShown() then
+			CloseList()
+			return
+		end
+		list:ClearAllPoints()
+		list:SetPoint("TOPLEFT", self, "BOTTOMLEFT", 0, -2)
+		list:SetWidth(width)
+		list:Show()
+		catcher:Show()
+	end)
+
+	return dd
+end
+
 -- The shared dark-swirl texture art, sitting on top of the flat background
 -- color (BORDER layer, below everything else - border/dividers/text all
 -- draw at ARTWORK/OVERLAY, above this), same treatment Reins and Compendium
