@@ -79,6 +79,8 @@ read_globals = {
     "IsShiftKeyDown",
     "print",
     "GetRealZoneText",
+    "StaticPopup_Show",
+    "GetCursorPosition",
 }
 
 -- Textures/backdrop tables and long chained SetPoint calls read as "unused
