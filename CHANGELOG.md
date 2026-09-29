@@ -1,5 +1,19 @@
 # Xal's Quest Compass - Changelog
 
+## 1.9.0 - September 29, 2026
+
+---
+
+Realized the old look was reading too blocky once I actually sat down and looked at it, so I've been going through and redoing the whole family's visual style - this addon's turn this time. Found a few other things worth fixing along the way too, so this update ended up covering more ground than just the color swap. Thanks for being a part of the Xal family.
+
+### 🆕 New
+- Added a Discord link to the What's New splash and the main settings window.
+
+### 🔧 Fixed
+- New look throughout: titles, the header divider under them, and a selected settings-sidebar link are now a dark brick red instead of orange; every other divider and panel border is now a near-black indigo instead of orange. Buttons switched from the old boxed style to plain text links.
+- Fixed a couple of settings-window details that were still using the old colors after the initial pass: the "Automation" section divider, and the left-side section list (which was also bumped up in text size for readability).
+- Fixed the minimized floating icon getting stuck showing a quest from a zone you'd already left - it now checks itself every second instead of only updating when a quest-log or zone-change event happened to fire.
+
 ## 1.8.0 - September 12, 2026
 
 ---
