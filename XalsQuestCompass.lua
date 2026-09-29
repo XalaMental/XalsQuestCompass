@@ -357,7 +357,7 @@ end
 local function CreateDivider(parent)
 	local Brand = XQC.BrandStyle
 	local line = parent:CreateTexture(nil, "ARTWORK")
-	line:SetColorTexture(0.16, 0.12, 0.05, 1)
+	line:SetColorTexture(Brand.DIVIDER_COLOR[1], Brand.DIVIDER_COLOR[2], Brand.DIVIDER_COLOR[3], 1)
 	PixelUtil.SetHeight(line, Brand.LINE_THICKNESS)
 	return line
 end
@@ -1474,7 +1474,7 @@ local function CreateOptionsPanel()
 	-- settings menu (same one the minimap button opens) - since this native
 	-- page is the slower-to-navigate, secondary way in.
 	local ACCENT_HEX = string.format("ff%02x%02x%02x",
-		math.floor(Brand.ACCENT[1] * 255 + 0.5), math.floor(Brand.ACCENT[2] * 255 + 0.5), math.floor(Brand.ACCENT[3] * 255 + 0.5))
+		math.floor(Brand.HEADER_COLOR[1] * 255 + 0.5), math.floor(Brand.HEADER_COLOR[2] * 255 + 0.5), math.floor(Brand.HEADER_COLOR[3] * 255 + 0.5))
 	local function Highlight(text) return "|c" .. ACCENT_HEX .. text .. "|r" end
 	local function PurpleHighlight(text) return "|cffa335ee" .. text .. "|r" end
 	local HOME_BODY_WIDTH = 300
@@ -1490,14 +1490,14 @@ local function CreateOptionsPanel()
 	homeIcon:SetTexture("Interface\\AddOns\\" .. ADDON_NAME .. "\\Textures\\MinimapIcon_v3.png")
 
 	local homeLead = Brand.FS(scrollChild, "Thanks for using Xal's Quest Compass.", "Fonts\\FRIZQT__.TTF", 20, "",
-		Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+		Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3])
 	homeLead:SetPoint("TOP", homeIcon, "BOTTOM", 0, -10)
 	homeLead:SetWidth(HOME_BODY_WIDTH)
 	homeLead:SetJustifyH("CENTER")
 	homeLead:SetWordWrap(true)
 
 	local homeRule = Brand.T(scrollChild, 0, 0, 60, Brand.LINE_THICKNESS,
-		Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1)
+		Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3], 1)
 	homeRule:ClearAllPoints()
 	homeRule:SetPoint("TOP", homeLead, "BOTTOM", 0, -10)
 
@@ -1526,7 +1526,7 @@ local function CreateOptionsPanel()
 	local homeDedication = Brand.FS(scrollChild,
 		"This one's for " .. PurpleHighlight('"Jo"')
 			.. " \194\183 my go-to traveling companion, dungeons and everything else. \"Oops, dang it, didn't turn that in\" one too many times, so I built this to help you out in-game the way you make my adventuring a whole lot more pleasant.\nHere you go, friend.",
-		"Fonts\\FRIZQT__.TTF", 12, "", Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+		"Fonts\\FRIZQT__.TTF", 12, "", Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3])
 	homeDedication:SetPoint("TOP", openSettingsBtn, "BOTTOM", 0, -22)
 	homeDedication:SetWidth(HOME_BODY_WIDTH)
 	homeDedication:SetJustifyH("CENTER")
@@ -1644,7 +1644,10 @@ local function BuildStandaloneOptionsWindow()
 	-- same treatment as Xpedited Routes' standalone settings window) - just
 	-- the flat indigo Brand.BG color on its own.
 	Brand.ApplyBackground(f)
-	Brand.DrawBorder(f)
+	-- Inset 1 (flush against the true outer edge) - confirmed 2026-09-20 as
+	-- this standalone window's outer border position, distinct from a
+	-- panel/card edge within a page (inset 0/default 6).
+	Brand.DrawBorder(f, 1)
 	-- Roughly centered between the top border (~8px) and the header divider
 	-- (now 80px) - best estimate accounting for the title+shadow's visual
 	-- height, not a precise measurement, may need a small nudge once seen live.
@@ -1654,15 +1657,16 @@ local function BuildStandaloneOptionsWindow()
 	-- window exactly - no other controls up there. Plain text link, not a
 	-- bordered X - text-link buttons are the addon-wide default now (see
 	-- Xal's Reins), bordered stays only for the rare single prominent CTA.
-	local closeBtn = Brand.MakeLinkButton(f)
-	closeBtn:SetLabel("Close", GOLD)
-	closeBtn:SetScript("OnClick", function() f:Hide() end)
+	local closeBtn = Brand.MakeCloseButton(f, function() f:Hide() end)
 	PixelUtil.SetPoint(closeBtn, "TOPRIGHT", f, "TOPRIGHT", -Brand.SAFE_MARGIN, -Brand.SAFE_MARGIN)
 
 	-- Pushed down from 66 to 80 - the bigger title + stronger shadow (32pt,
 	-- 4px offset) was reaching far enough down to visually cut into the
-	-- divider at the old position.
-	Brand.DrawDivider(f, Brand.SAFE_MARGIN, 80, FW - Brand.SAFE_MARGIN * 2)
+	-- divider at the old position. This is THE one header divider directly
+	-- under the window's title, so it uses DrawHeaderDivider (HEADER_COLOR)
+	-- rather than the plain DrawDivider every other divider in this window
+	-- uses (DIVIDER_COLOR) - confirmed 2026-09-20 as its own distinct color.
+	Brand.DrawHeaderDivider(f, Brand.SAFE_MARGIN, 80, FW - Brand.SAFE_MARGIN * 2)
 
 	-- STEP 2: sidebar shell - section buttons + vertical divider, matching
 	-- Routes' sidebar exactly (132px sidebar, 116px buttons, 8px side pad,
@@ -1680,7 +1684,7 @@ local function BuildStandaloneOptionsWindow()
 
 	local vDivider = f:CreateTexture(nil, "ARTWORK")
 	vDivider:SetWidth(Brand.LINE_THICKNESS)
-	vDivider:SetColorTexture(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1)
+	vDivider:SetColorTexture(Brand.DIVIDER_COLOR[1], Brand.DIVIDER_COLOR[2], Brand.DIVIDER_COLOR[3], 1)
 	vDivider:SetPoint("TOPLEFT", sidebar, "TOPRIGHT", 10, 0)
 	vDivider:SetPoint("BOTTOMLEFT", sidebar, "BOTTOMRIGHT", 10, 0)
 
@@ -1701,7 +1705,7 @@ local function BuildStandaloneOptionsWindow()
 	-- key phrases highlighted in accent gold inline.
 	----------------------------------------------------------------
 	local ACCENT_HEX = string.format("ff%02x%02x%02x",
-		Brand.ACCENT[1] * 255, Brand.ACCENT[2] * 255, Brand.ACCENT[3] * 255)
+		Brand.HEADER_COLOR[1] * 255, Brand.HEADER_COLOR[2] * 255, Brand.HEADER_COLOR[3] * 255)
 	local function Highlight(text) return "|c" .. ACCENT_HEX .. text .. "|r" end
 	-- WoW's own epic-item purple - a one-off accent just for Jo's name in the
 	-- dedication, not a general brand color.
@@ -1719,14 +1723,14 @@ local function BuildStandaloneOptionsWindow()
 	homeIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 
 	local homeLead = Brand.FS(homePanel, "Thanks for using Xal's Quest Compass.", "Fonts\\FRIZQT__.TTF", 26, "",
-		Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+		Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3])
 	homeLead:SetPoint("TOP", homeIcon, "BOTTOM", 0, -14)
 	homeLead:SetWidth(BODY_WIDTH)
 	homeLead:SetJustifyH("CENTER")
 	homeLead:SetWordWrap(true)
 
 	local homeRule = Brand.T(homePanel, 0, 0, 60, Brand.LINE_THICKNESS,
-		Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1)
+		Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3], 1)
 	homeRule:ClearAllPoints()
 	homeRule:SetPoint("TOP", homeLead, "BOTTOM", 0, -14)
 
@@ -1762,7 +1766,7 @@ local function BuildStandaloneOptionsWindow()
 	local homeDedication = Brand.FS(homePanel,
 		"This one's for " .. PurpleHighlight('"Jo"')
 			.. " \194\183 my go-to traveling companion, dungeons and everything else. \"Oops, dang it, didn't turn that in\" one too many times, so I built this to help you out in-game the way you make my adventuring a whole lot more pleasant.\nHere you go, friend.",
-		"Fonts\\FRIZQT__.TTF", 13, "", Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+		"Fonts\\FRIZQT__.TTF", 13, "", Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3])
 	homeDedication:SetPoint("BOTTOM", homePanel, "BOTTOM", 0, 22)
 	homeDedication:SetWidth(BODY_WIDTH)
 	homeDedication:SetJustifyH("CENTER")
@@ -1787,7 +1791,7 @@ local function BuildStandaloneOptionsWindow()
 		-- 2026-08-11 after an A/B test against centered.
 		local headerShadow = Brand.FS(parent, name, "Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\CustomFont.ttf", 24, "OUTLINE", 0, 0, 0)
 		local header = Brand.FS(parent, name, "Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\CustomFont.ttf", 24, "OUTLINE",
-			Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+			Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3])
 		if anchorTo then
 			header:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, gap)
 		else
@@ -1877,7 +1881,7 @@ local function BuildStandaloneOptionsWindow()
 		thumbSlider:SetWidth(8)
 		thumbSlider:SetThumbTexture("Interface\\Buttons\\WHITE8x8")
 		local thumbTex = thumbSlider:GetThumbTexture()
-		thumbTex:SetVertexColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1)
+		thumbTex:SetVertexColor(Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3], 1)
 		thumbTex:SetWidth(8)
 
 		local suppressCallback = false
@@ -2079,25 +2083,25 @@ local function BuildStandaloneOptionsWindow()
 		PixelUtil.SetPoint(top, "TOPLEFT", swatch, "TOPLEFT", 0, 0)
 		PixelUtil.SetPoint(top, "TOPRIGHT", swatch, "TOPRIGHT", 0, 0)
 		PixelUtil.SetHeight(top, thick)
-		top:SetColorTexture(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1)
+		top:SetColorTexture(Brand.DIVIDER_COLOR[1], Brand.DIVIDER_COLOR[2], Brand.DIVIDER_COLOR[3], 1)
 
 		local bottom = swatch:CreateTexture(nil, "ARTWORK")
 		PixelUtil.SetPoint(bottom, "BOTTOMLEFT", swatch, "BOTTOMLEFT", 0, 0)
 		PixelUtil.SetPoint(bottom, "BOTTOMRIGHT", swatch, "BOTTOMRIGHT", 0, 0)
 		PixelUtil.SetHeight(bottom, thick)
-		bottom:SetColorTexture(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1)
+		bottom:SetColorTexture(Brand.DIVIDER_COLOR[1], Brand.DIVIDER_COLOR[2], Brand.DIVIDER_COLOR[3], 1)
 
 		local left = swatch:CreateTexture(nil, "ARTWORK")
 		PixelUtil.SetPoint(left, "TOPLEFT", swatch, "TOPLEFT", 0, 0)
 		PixelUtil.SetPoint(left, "BOTTOMLEFT", swatch, "BOTTOMLEFT", 0, 0)
 		PixelUtil.SetWidth(left, thick)
-		left:SetColorTexture(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1)
+		left:SetColorTexture(Brand.DIVIDER_COLOR[1], Brand.DIVIDER_COLOR[2], Brand.DIVIDER_COLOR[3], 1)
 
 		local right = swatch:CreateTexture(nil, "ARTWORK")
 		PixelUtil.SetPoint(right, "TOPRIGHT", swatch, "TOPRIGHT", 0, 0)
 		PixelUtil.SetPoint(right, "BOTTOMRIGHT", swatch, "BOTTOMRIGHT", 0, 0)
 		PixelUtil.SetWidth(right, thick)
-		right:SetColorTexture(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3], 1)
+		right:SetColorTexture(Brand.DIVIDER_COLOR[1], Brand.DIVIDER_COLOR[2], Brand.DIVIDER_COLOR[3], 1)
 
 		swatch:SetScript("OnClick", function()
 			OpenColorPicker(dbColorTable[1], dbColorTable[2], dbColorTable[3], function(r, g, b)
@@ -2191,7 +2195,7 @@ local function BuildStandaloneOptionsWindow()
 	local sizeValueText = fontScrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	sizeValueText:SetPoint("BOTTOM", sizeSlider, "TOP", 0, 4)
 	BumpFont(sizeValueText, PANEL_LABEL_FONT_SIZE)
-	sizeValueText:SetTextColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	sizeValueText:SetTextColor(Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3])
 	local function UpdateSizeSliderText()
 		sizeValueText:SetText("Font Size: " .. (XalsQuestCompassDB.fontSize or 13))
 	end
@@ -2281,7 +2285,7 @@ local function BuildStandaloneOptionsWindow()
 	local scaleValueText = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	scaleValueText:SetPoint("BOTTOM", scaleSlider, "TOP", 0, 4)
 	BumpFont(scaleValueText, PANEL_LABEL_FONT_SIZE)
-	scaleValueText:SetTextColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	scaleValueText:SetTextColor(Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3])
 	local function UpdateDisplayScaleText()
 		scaleValueText:SetText(string.format("Window Scale: %.2f", XalsQuestCompassDB.windowScale or 1.0))
 	end
@@ -2322,7 +2326,7 @@ local function BuildStandaloneOptionsWindow()
 		box:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, -18)
 		box:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
 		box:SetBackdropColor(0.08, 0.08, 0.1, 0.9)
-		box:SetBackdropBorderColor(Brand.ACCENT[1] * 0.6, Brand.ACCENT[2] * 0.6, Brand.ACCENT[3] * 0.6, 1)
+		box:SetBackdropBorderColor(Brand.DIVIDER_COLOR[1], Brand.DIVIDER_COLOR[2], Brand.DIVIDER_COLOR[3], 1)
 
 		local axisText = displayPanel:CreateFontString(nil, "OVERLAY")
 		axisText:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 11, "")
@@ -2423,7 +2427,7 @@ local function BuildStandaloneOptionsWindow()
 	local iconSizeValueText = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	iconSizeValueText:SetPoint("BOTTOM", iconSizeSlider, "TOP", 0, 4)
 	BumpFont(iconSizeValueText, PANEL_LABEL_FONT_SIZE)
-	iconSizeValueText:SetTextColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	iconSizeValueText:SetTextColor(Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3])
 	local function UpdateIconSizeText()
 		iconSizeValueText:SetText("Icon Size: " .. (XalsQuestCompassDB.iconSize or defaults.iconSize))
 	end
@@ -2536,7 +2540,13 @@ local function BuildStandaloneOptionsWindow()
 	local anchorTab = nil
 	for i, name in ipairs(SECTION_NAMES) do
 		local tab = Brand.MakeLinkButton(sidebar)
-		tab:SetLabel(name, GOLD)
+		-- Bumped from the default GameFontHighlightSmall (too small to read
+		-- comfortably in a real screenshot) to the brand's own body font at
+		-- a bigger explicit size.
+		tab.label:SetFont(Brand.BODY_FONT_PATH_SEMIBOLD, 16, "")
+		-- Unselected sidebar-link color, confirmed 2026-09-20 - was GOLD
+		-- (read as yellow next to the new dark-red/indigo scheme).
+		tab:SetLabel(name, Brand.SIDEBAR_UNSELECTED)
 		tab:SetScript("OnClick", function() ShowSection(i) end)
 		tab:ClearAllPoints()
 		if anchorTab then
@@ -2551,6 +2561,18 @@ local function BuildStandaloneOptionsWindow()
 		anchorTab = tab
 	end
 	ShowSection(1)
+
+	-- Standing Discord link - bottom of the sidebar (visible on every
+	-- section, not just Home), not the header (the header row is title+Close
+	-- only, per the standard above). Sized up from the base 92x20/21x16 -
+	-- confirmed too small at its original size.
+	if Brand.MakeDiscordLink then
+		local discordLink = Brand.MakeDiscordLink(sidebar)
+		discordLink:SetPoint("BOTTOMLEFT", sidebar, "BOTTOMLEFT", 0, 0)
+		discordLink:SetSize(116, 26)
+		discordLink.icon:SetSize(27, 21)
+		discordLink.label:SetFont(Brand.BODY_FONT_PATH_SEMIBOLD, 15, "")
+	end
 
 	----------------------------------------------------------------
 	-- Footer: version + branding, fixed at the bottom of the whole window
@@ -2683,7 +2705,7 @@ local function CreateMainFrame()
 	-- Fixed Cinzel (the mockup's actual title font - Cinzel Bold static TTF,
 	-- NDISCOVER/Cinzel), not tied to titleFontObj (the user's quest-title
 	-- Font picker) - this is chrome, not customizable quest content. Color
-	-- is Brand.ACCENT (the new orange) instead of the addon's own local
+	-- is Brand.HEADER_COLOR (dark brick red, family-wide as of 2026-09-20/25) instead of the addon's own local
 	-- GOLD constant. Drop shadow instead of OUTLINE, matching the mockup's
 	-- text-shadow rather than the old stock-game-font outline look.
 	QTT.title = QTT:CreateFontString(nil, "OVERLAY")
@@ -2692,7 +2714,7 @@ local function CreateMainFrame()
 	QTT.title:SetShadowColor(0, 0, 0, 0.9)
 	QTT.title:SetPoint("TOPLEFT", Brand.SAFE_MARGIN, -Brand.SAFE_MARGIN)
 	QTT.title:SetText("Quest Compass")
-	QTT.title:SetTextColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	QTT.title:SetTextColor(Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3])
 
 	-- Clicking the title toggles minimized/expanded - replaces the old
 	-- separate "-"/"+" minimize button entirely (confirmed 2026-09-02, same
@@ -2947,7 +2969,7 @@ local function CreateCompactIcon()
 	glow:SetBlendMode("ADD")
 	glow:SetSize(iconSize * 1.875, iconSize * 1.875)
 	glow:SetPoint("CENTER")
-	glow:SetVertexColor(Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+	glow:SetVertexColor(Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3])
 	glow:Hide()
 	icon.glow = glow
 
@@ -2986,7 +3008,7 @@ local function CreateCompactIcon()
 
 	icon:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:SetText("Quest Compass", Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+		GameTooltip:SetText("Quest Compass", Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3])
 		local quests = icon.cachedQuests or {}
 		if #quests == 0 then
 			GameTooltip:AddLine("Nothing ready to turn in.", 0.6, 0.6, 0.6)
@@ -3005,6 +3027,28 @@ local function CreateCompactIcon()
 		GameTooltip:Show()
 	end)
 	icon:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+	-- The expanded/bar window has its own 1-second ticker keeping it live
+	-- (QTT's own OnShow/OnHide, further down) - but that only runs while QTT
+	-- itself is shown, which it never is in icon mode. Without this, the icon
+	-- only updates when a quest-log or zone-change event happens to fire, and
+	-- some zone transitions (confirmed live: entering Housing) don't trigger
+	-- any of the events this addon listens for at all, leaving a stale icon
+	-- showing a quest from wherever it was last correct until something else
+	-- (opening and closing the window, a quest turning in elsewhere) forces
+	-- a refresh. Same pattern as QTT's own ticker, just tied to the icon's
+	-- own visibility instead.
+	icon:SetScript("OnShow", function()
+		if not icon.ticker then
+			icon.ticker = C_Timer.NewTicker(1, RefreshList)
+		end
+	end)
+	icon:SetScript("OnHide", function()
+		if icon.ticker then
+			icon.ticker:Cancel()
+			icon.ticker = nil
+		end
+	end)
 
 	return icon
 end
