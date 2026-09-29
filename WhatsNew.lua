@@ -70,17 +70,26 @@ local function BuildFrame(installedVersion)
 	f:SetClampedToScreen(true)
 
 	Brand.ApplyBackground(f)
-	Brand.DrawBorder(f)
+	-- Inset 1 (flush against the true outer edge) - confirmed 2026-09-20 as
+	-- a standalone window's outer border position.
+	Brand.DrawBorder(f, 1)
 
 	local data = W.WHATS_NEW
 	Brand.Title(f, "What's New", 26, "TOP", f, "TOP", 0, -24)
+
+	if Brand.MakeDiscordLink then
+		local discordLink = Brand.MakeDiscordLink(f)
+		discordLink:SetPoint("TOPRIGHT", f, "TOPRIGHT", -Brand.SAFE_MARGIN, -Brand.SAFE_MARGIN)
+	end
 
 	local verLine = Brand.FS(f, "Version " .. installedVersion .. (data.date and ("  ·  " .. data.date) or ""),
 		"Fonts\\ARIALN.TTF", 12, "", Brand.GOLD[1], Brand.GOLD[2], Brand.GOLD[3])
 	verLine:SetPoint("TOP", f, "TOP", 0, -58)
 	verLine:SetJustifyH("CENTER")
 
-	Brand.DrawDivider(f, 30, 78, FW - 60)
+	-- THE one header divider directly under this window's title - HEADER_COLOR
+	-- (DrawHeaderDivider), not DIVIDER_COLOR like every other divider.
+	Brand.DrawHeaderDivider(f, 30, 78, FW - 60)
 
 	local y = 92
 	if data.intro and data.intro ~= "" then
@@ -94,7 +103,7 @@ local function BuildFrame(installedVersion)
 
 	for _, section in ipairs(data.sections or {}) do
 		local head = Brand.FS(f, section.heading, "Fonts\\ARIALN.TTF", 13, "OUTLINE",
-			Brand.ACCENT[1], Brand.ACCENT[2], Brand.ACCENT[3])
+			Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3])
 		head:SetPoint("TOPLEFT", f, "TOPLEFT", 30, -y)
 		y = y + 20
 
