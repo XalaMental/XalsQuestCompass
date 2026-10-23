@@ -256,7 +256,14 @@ end
 function Brand.MakeLinkButton(parent)
 	local btn = CreateFrame("Button", nil, parent)
 	local label = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	label:SetPoint("CENTER")
+	-- LEFT, not CENTER - the button is auto-sized to the label's measured
+	-- GetStringWidth(), which isn't pixel-exact against the glyphs' actual
+	-- rendered width, so centering amplified that slop into a visibly
+	-- inconsistent left edge across different-length labels (caught on the
+	-- sidebar tabs: "Home"/"Font"/"Display" sat a few px right of "Behavior"/
+	-- "Automation"). Anchoring LEFT pins the text's left edge exactly to the
+	-- button's, independent of any width-measurement rounding.
+	label:SetPoint("LEFT")
 	btn.label = label
 	PixelUtil.SetHeight(btn, 20)
 
