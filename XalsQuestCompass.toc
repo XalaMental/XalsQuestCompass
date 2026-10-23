@@ -1,4 +1,4 @@
-## Interface: 120100, 120007
+## Interface: 120100, 120105, 120007
 ## Title: Xal's Quest Compass
 ## Notes: Toggleable list of quests that are ready to turn in, with tracking, navigation, and appearance options.
 ## Author: Xal
