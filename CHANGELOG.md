@@ -1,5 +1,15 @@
 # Xal's Quest Compass - Changelog
 
+## 1.9.1 - October 23, 2026
+
+---
+
+Quick follow-up to the new look. Once I'd been living with it for a bit, the settings window's left-side section list wasn't sitting quite right - some links were nudged in a little further than others - so I tightened that up, and I made sure the addon is current for the latest game patch while I was in there. Thanks for being a part of the Xal family.
+
+### 🔧 Fixed
+- Fixed the settings window's left-side section list (Home, Behavior, Automation, Font, Display) so every link lines up flush left with a little more breathing room from the edge, instead of some sitting slightly indented.
+- Updated for the latest game patch so the addon no longer risks showing as out of date.
+
 ## 1.9.0 - September 29, 2026
 
 ---
