@@ -2536,7 +2536,7 @@ local function BuildStandaloneOptionsWindow()
 		end
 	end
 
-	local TAB_SIDE_PAD = 8
+	local TAB_SIDE_PAD = 16
 	local anchorTab = nil
 	for i, name in ipairs(SECTION_NAMES) do
 		local tab = Brand.MakeLinkButton(sidebar)
