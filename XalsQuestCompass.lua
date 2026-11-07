@@ -39,6 +39,9 @@ local ZONE_BLUE = { 0.00, 0.44, 0.87 } -- #0070DD, Blizzard's standard shaman cl
 -- check.
 local IS_CLASSIC = C_QuestLog.GetInfo == nil
 
+-- WoW Forever has the modern quest-log functions (so IS_CLASSIC is false) but not the retail distance/waypoint ones.
+local USE_MAP_LOCATION = IS_CLASSIC or not (C_QuestLog.GetDistanceSqToQuest and C_QuestLog.GetNextWaypoint and C_QuestLog.GetNextWaypointForMap)
+
 -- Returns questID, title, isHeader, isHidden for quest-log entry `index`
 -- (1-based), or nil if there's nothing there. isHidden covers entries the
 -- game itself keeps out of the player's visible quest log (e.g. Renown
@@ -367,7 +370,7 @@ end
 -------------------------------------------------
 
 local function FormatDistance(info)
-	if IS_CLASSIC then
+	if USE_MAP_LOCATION then
 		-- No real yard distance available on Classic (see Compat_GetQuestMapXY) -
 		-- "nearby" is honest about what we actually know: same zone, sorted
 		-- nearest-first among same-zone quests, but not a precise number.
@@ -438,7 +441,7 @@ end
 -- waypoint (its turn-in location once it's ready), for building a
 -- TomTom-style waypoint command.
 local function GetQuestWaypointCoords(questID)
-	if IS_CLASSIC then
+	if USE_MAP_LOCATION then
 		-- Only works for quests in the player's current zone - see
 		-- Compat_GetQuestMapXY. A quest elsewhere returns nil here and
 		-- NavigateToQuest below falls back to the SuperTrack-equivalent arrow,
@@ -550,7 +553,7 @@ local function GetTurnInQuests(forceAllZones)
 		if questID and not isHeader and not isHidden and questID > 0 and Compat_IsComplete(questID) then
 			local info = { questID = questID, title = title, zoneName = currentHeaderName or playerZoneName }
 
-			if IS_CLASSIC then
+			if USE_MAP_LOCATION then
 				-- Only quests in the player's current zone get location data at
 				-- all on Classic (see Compat_GetQuestMapXY) - everything else
 				-- falls into the same "no data" bucket as retail's off-continent
@@ -584,12 +587,13 @@ local function GetTurnInQuests(forceAllZones)
 				-- excluded - they auto-complete on their own the moment the
 				-- objective is done, so they never actually sit in the
 				-- ready-to-turn-in list the way a normal quest does.)
-				if frequency == Enum.QuestFrequency.Daily then
+				local questFrequency = Enum and Enum.QuestFrequency
+				if questFrequency and frequency == questFrequency.Daily then
 					local rOk, secondsLeft = pcall(GetQuestResetTime)
 					if rOk and secondsLeft and secondsLeft > 0 then
 						info.minutesLeft = math.floor(secondsLeft / 60)
 					end
-				elseif frequency == Enum.QuestFrequency.Weekly then
+				elseif questFrequency and frequency == questFrequency.Weekly and C_DateAndTime then
 					local rOk, secondsLeft = pcall(C_DateAndTime.GetSecondsUntilWeeklyReset)
 					if rOk and secondsLeft and secondsLeft > 0 then
 						info.minutesLeft = math.floor(secondsLeft / 60)
@@ -623,7 +627,7 @@ local function GetTurnInQuests(forceAllZones)
 	end
 
 	table.sort(quests, function(a, b)
-		if IS_CLASSIC then
+		if USE_MAP_LOCATION then
 			local aHas = a.ttt_classicSameZone and a.ttt_classicSortDist
 			local bHas = b.ttt_classicSameZone and b.ttt_classicSortDist
 			if aHas and bHas then
@@ -3240,10 +3244,11 @@ eventFrame:RegisterEvent("UNIT_QUEST_LOG_CHANGED")
 -- ever finishing (nothing after this point would ever run, including the
 -- ADDON_LOADED handler - this was a total, silent addon failure on Classic
 -- until fixed). Classic has its own equivalently-named event instead.
-if IS_CLASSIC then
-	eventFrame:RegisterEvent("SUPER_TRACKED_QUEST_CHANGED")
-else
-	eventFrame:RegisterEvent("SUPER_TRACKING_CHANGED")
+-- Forever can't be told apart from retail by the check above, so each name is tried under pcall (an unknown event throws).
+local superTrackEvents = IS_CLASSIC and { "SUPER_TRACKED_QUEST_CHANGED", "SUPER_TRACKING_CHANGED" }
+	or { "SUPER_TRACKING_CHANGED", "SUPER_TRACKED_QUEST_CHANGED" }
+for _, eventName in ipairs(superTrackEvents) do
+	if pcall(eventFrame.RegisterEvent, eventFrame, eventName) then break end
 end
 eventFrame:RegisterEvent("ZONE_CHANGED")
 eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
