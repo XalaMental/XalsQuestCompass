@@ -344,6 +344,8 @@ function Brand.MakeDiscordLink(parent)
 	btn.label:ClearAllPoints()
 	btn.label:SetPoint("LEFT", icon, "RIGHT", 5, 0)
 	btn:SetLabel("Discord", { 0.45, 0.55, 0.95 })
+	-- SetLabel sizes the button to the text alone, which left the icon hanging outside the right edge.
+	PixelUtil.SetWidth(btn, icon:GetWidth() + 5 + btn.label:GetStringWidth())
 
 	btn:HookScript("OnEnter", function() icon:SetVertexColor(1, 1, 1, 1) end)
 	btn:HookScript("OnLeave", function() icon:SetVertexColor(0.45, 0.55, 0.95, 1) end)
