@@ -1,5 +1,18 @@
 # Xal's Quest Compass - Changelog
 
+## 1.10.0 - November 6, 2026
+
+---
+
+Quest Compass now runs on WoW Forever too. I've been playing there more and more, and it felt wrong to have this one sitting out, so I went through it and made it work with what Forever actually has. A few things are a bit simpler there than on retail, which I've noted below. Thanks for being a part of the Xal family.
+
+### 🆕 New
+- Added support for WoW Forever. Ready-to-turn-in quests, tracking, Navigate and Route All all work there. Since Forever doesn't have the retail distance information, quests in your current zone show as "nearby" (nearest first) and quests elsewhere get no distance, the same way it already works on Classic.
+
+### 🔧 Fixed
+- Fixed the Discord link on the What's New window sticking out past the window's right border.
+- Updated for the latest game patch so the addon no longer risks showing as out of date.
+
 ## 1.9.1 - October 23, 2026
 
 ---
