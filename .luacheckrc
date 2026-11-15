@@ -27,6 +27,8 @@ read_globals = {
     "LibStub",
     "CreateFont",
     "CreateVector2D",
+    "WOW_PROJECT_ID",
+    "WOW_PROJECT_CAMELOT",
     "CreateColor",
     "C_Map",
     "C_QuestLog",
