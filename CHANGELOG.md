@@ -1,5 +1,19 @@
 # Xal's Quest Compass - Changelog
 
+## 1.11.0 - November 15, 2026
+
+---
+
+I wanted Quest Compass to feel as good as it looks in my head, so this one's a bit of everything. There are now six skins to pick from (including a light one), the icon got a much brighter, more colorful makeover, and if you play on WoW Forever, it now remembers where each quest turns in so you get real distances and Navigate keeps working after you leave the zone. Thanks for being a part of the Xal family.
+
+### 🆕 New
+- Added six skins - Crimson, Ember, Bronze ledger, Midnight, Indigo slate and Parchment (a light one) - on a new Skin page in settings. Picking one re-colors every window right away, and the layout never changes. New installs start on Ember.
+- On WoW Forever, ready quests now remember where they turn in once you've been in their zone, so you get real distances in yards, nearest-first sorting, and Navigate and Route All that keep working after you leave the zone.
+- Brand-new icon: a golden owl gripping a glowing compass on a sunny map, much brighter and more colorful than the old one.
+
+### 🔧 Fixed
+- The What's New window was still showing the August notes - it now describes this version.
+
 ## 1.10.0 - November 6, 2026
 
 ---
