@@ -215,6 +215,7 @@ local defaults = {
 	autoTurnIn = false,
 	autoAccept = false,
 	readySound = false,
+	skin = "ember", -- the colors every window uses (XalsSkins.lua)
 }
 
 local function InitDB()
@@ -224,6 +225,8 @@ local function InitDB()
 			XalsQuestCompassDB[k] = v
 		end
 	end
+	-- Applied here, before any window is built, so everything picks it up.
+	XalsQuestCompassDB.skin = XQC.BrandStyle.ApplySkin(XalsQuestCompassDB.skin)
 end
 
 -------------------------------------------------
@@ -374,6 +377,11 @@ local function FormatDistance(info)
 		-- No real yard distance available on Classic (see Compat_GetQuestMapXY) -
 		-- "nearby" is honest about what we actually know: same zone, sorted
 		-- nearest-first among same-zone quests, but not a precise number.
+		if info.ttt_distSq and info.ttt_onContinent then
+			return string.format("%.0f yd away", math.sqrt(info.ttt_distSq))
+		elseif info.ttt_distSq ~= nil then
+			return "far away"
+		end
 		if info.ttt_classicSameZone then return "nearby" end
 		return ""
 	end
@@ -437,6 +445,66 @@ local function AddRewardPreviewLines(tooltip, questID)
 	end
 end
 
+-- WoW Forever only: with no retail distance API there, a ready quest's turn-in
+-- spot is remembered (XalsQuestCompassDB.questSpots) whenever the player is in
+-- the zone it's on, so distance, sorting, Navigate and Route All keep working
+-- after the player leaves that zone. Forgotten when the quest leaves the log.
+-- Every call here is pcall-guarded by its caller: any failure just falls back
+-- to the plain current-zone behavior.
+local IS_FOREVER = WOW_PROJECT_CAMELOT ~= nil and WOW_PROJECT_ID == WOW_PROJECT_CAMELOT
+
+local function ForeverWorldPoint(uiMapID, x, y)
+	local continentID, worldPos = C_Map.GetWorldPosFromMapPos(uiMapID, CreateVector2D(x, y))
+	if not continentID or not worldPos then return nil end
+	local wx, wy = worldPos:GetXY()
+	if not wx then return nil end
+	return continentID, wx, wy
+end
+
+local function ForeverPlayerWorldPoint()
+	local uiMapID = C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
+	if not uiMapID then return nil end
+	local pos = C_Map.GetPlayerMapPosition(uiMapID, "player")
+	if not pos then return nil end
+	local px, py = pos:GetXY()
+	if not px then return nil end
+	return ForeverWorldPoint(uiMapID, px, py)
+end
+
+local function ForeverSpots()
+	local spots = XalsQuestCompassDB.questSpots
+	if not spots then
+		spots = {}
+		XalsQuestCompassDB.questSpots = spots
+	end
+	return spots
+end
+
+-- Remembers the spot if the quest is on the player's current map, then sets
+-- info's distance fields from the remembered spot (retail's field names, so
+-- FormatDistance and the sort need no special case).
+local function ForeverApplyDistance(info, questID, playerMapID, x, y)
+	local spots = ForeverSpots()
+	if x and y then
+		local continentID, wx, wy = ForeverWorldPoint(playerMapID, x, y)
+		if continentID then
+			spots[questID] = { m = playerMapID, mx = x, my = y, c = continentID, x = wx, y = wy }
+		end
+	end
+	local spot = spots[questID]
+	if not spot then return end
+	local pc, px, py = ForeverPlayerWorldPoint()
+	if not pc then return end
+	if pc == spot.c then
+		local dx, dy = spot.x - px, spot.y - py
+		info.ttt_distSq = dx * dx + dy * dy
+		info.ttt_onContinent = true
+	else
+		info.ttt_distSq = 1
+		info.ttt_onContinent = false
+	end
+end
+
 -- Gets the map and normalized (0-1) coordinates of a quest's next
 -- waypoint (its turn-in location once it's ready), for building a
 -- TomTom-style waypoint command.
@@ -448,7 +516,11 @@ local function GetQuestWaypointCoords(questID)
 		-- which needs no coordinates and works regardless of zone.
 		local uiMapID = C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
 		local x, y = Compat_GetQuestMapXY(questID, uiMapID)
-		if not uiMapID or not x then return nil end
+		if not uiMapID or not x then
+			local spot = IS_FOREVER and XalsQuestCompassDB.questSpots and XalsQuestCompassDB.questSpots[questID]
+			if spot then return spot.m, spot.mx, spot.my end
+			return nil
+		end
 		return uiMapID, x, y
 	end
 	local ok, uiMapID = pcall(C_QuestLog.GetNextWaypoint, questID)
@@ -568,6 +640,9 @@ local function GetTurnInQuests(forceAllZones)
 						info.ttt_classicSortDist = dx * dx + dy * dy
 					end
 				end
+				if IS_FOREVER and playerMapID then
+					pcall(ForeverApplyDistance, info, questID, playerMapID, x, y)
+				end
 
 				local include = true
 				if zoneOnly and playerMapID and not info.ttt_classicSameZone then
@@ -628,6 +703,16 @@ local function GetTurnInQuests(forceAllZones)
 
 	table.sort(quests, function(a, b)
 		if USE_MAP_LOCATION then
+			-- Forever: real yards (own zone or a remembered spot) sort first, nearest first.
+			local aYd = a.ttt_onContinent and a.ttt_distSq
+			local bYd = b.ttt_onContinent and b.ttt_distSq
+			if aYd and bYd then
+				return aYd < bYd
+			elseif aYd then
+				return true
+			elseif bYd then
+				return false
+			end
 			local aHas = a.ttt_classicSameZone and a.ttt_classicSortDist
 			local bHas = b.ttt_classicSameZone and b.ttt_classicSortDist
 			if aHas and bHas then
@@ -1437,6 +1522,9 @@ local CARD_LEFT_MARGIN = 8
 local function BumpFont(fs, size)
 	local font, _, flags = fs:GetFont()
 	fs:SetFont(font, size, flags)
+	-- The slider templates' own label color is a fixed white, unreadable on a light skin.
+	local c = XQC.BrandStyle.DESC_COLOR
+	fs:SetTextColor(c[1], c[2], c[3])
 end
 
 local function CreateOptionsPanel()
@@ -1477,11 +1565,20 @@ local function CreateOptionsPanel()
 	-- own way to reach the standalone window - the addon's real, primary
 	-- settings menu (same one the minimap button opens) - since this native
 	-- page is the slower-to-navigate, secondary way in.
-	local ACCENT_HEX = string.format("ff%02x%02x%02x",
-		math.floor(Brand.HEADER_COLOR[1] * 255 + 0.5), math.floor(Brand.HEADER_COLOR[2] * 255 + 0.5), math.floor(Brand.HEADER_COLOR[3] * 255 + 0.5))
-	local function Highlight(text) return "|c" .. ACCENT_HEX .. text .. "|r" end
+	-- Read fresh each time (not cached) so a live skin change can rebuild the text.
+	local function Highlight(text)
+		return string.format("|cff%02x%02x%02x", math.floor(Brand.HEADER_COLOR[1] * 255 + 0.5),
+			math.floor(Brand.HEADER_COLOR[2] * 255 + 0.5), math.floor(Brand.HEADER_COLOR[3] * 255 + 0.5)) .. text .. "|r"
+	end
 	local function PurpleHighlight(text) return "|cffa335ee" .. text .. "|r" end
 	local HOME_BODY_WIDTH = 300
+	local function Body1Text()
+		return "Quests pile up complete in your log and it's easy to lose track of which ones are actually ready to hand in. I built this addon to fix exactly that - a clean list of what's ready, sorted by distance, with one click to "
+			.. Highlight("navigate") .. " and one click to " .. Highlight("track") .. "."
+	end
+	local function Body2Text()
+		return Highlight("Route All") .. " takes it further: one button plans a route through everything you're ready to turn in and walks you through it, stop by stop."
+	end
 
 	local homeIcon = scrollChild:CreateTexture(nil, "ARTWORK")
 	homeIcon:SetSize(120, 120)
@@ -1505,18 +1602,17 @@ local function CreateOptionsPanel()
 	homeRule:ClearAllPoints()
 	homeRule:SetPoint("TOP", homeLead, "BOTTOM", 0, -10)
 
-	local homeBody1 = Brand.FS(scrollChild,
-		"Quests pile up complete in your log and it's easy to lose track of which ones are actually ready to hand in. I built this addon to fix exactly that - a clean list of what's ready, sorted by distance, with one click to "
-			.. Highlight("navigate") .. " and one click to " .. Highlight("track") .. ".",
-		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 13, "", 0.85, 0.85, 0.85)
+	local homeBody1 = Brand.FS(scrollChild, Body1Text(),
+		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 13, "",
+		Brand.BODY_COLOR[1], Brand.BODY_COLOR[2], Brand.BODY_COLOR[3])
 	homeBody1:SetPoint("TOP", homeRule, "BOTTOM", 0, -14)
 	homeBody1:SetWidth(HOME_BODY_WIDTH)
 	homeBody1:SetJustifyH("CENTER")
 	homeBody1:SetWordWrap(true)
 
-	local homeBody2 = Brand.FS(scrollChild,
-		Highlight("Route All") .. " takes it further: one button plans a route through everything you're ready to turn in and walks you through it, stop by stop.",
-		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 13, "", 0.85, 0.85, 0.85)
+	local homeBody2 = Brand.FS(scrollChild, Body2Text(),
+		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 13, "",
+		Brand.BODY_COLOR[1], Brand.BODY_COLOR[2], Brand.BODY_COLOR[3])
 	homeBody2:SetPoint("TOP", homeBody1, "BOTTOM", 0, -12)
 	homeBody2:SetWidth(HOME_BODY_WIDTH)
 	homeBody2:SetJustifyH("CENTER")
@@ -1535,6 +1631,20 @@ local function CreateOptionsPanel()
 	homeDedication:SetWidth(HOME_BODY_WIDTH)
 	homeDedication:SetJustifyH("CENTER")
 	homeDedication:SetWordWrap(true)
+
+	-- Re-colors this page after a live skin change (the page itself is built
+	-- once, so unlike the settings window it can't just be rebuilt).
+	function panel.ApplySkin()
+		local H, B = Brand.HEADER_COLOR, Brand.BODY_COLOR
+		homeLead:SetTextColor(H[1], H[2], H[3], 1)
+		homeRule:SetColorTexture(H[1], H[2], H[3], 1)
+		homeBody1:SetText(Body1Text())
+		homeBody1:SetTextColor(B[1], B[2], B[3], 1)
+		homeBody2:SetText(Body2Text())
+		homeBody2:SetTextColor(B[1], B[2], B[3], 1)
+		homeDedication:SetTextColor(H[1], H[2], H[3], 1)
+		openSettingsBtn:SetSelected(false)
+	end
 
 	panel:SetScript("OnShow", function()
 		-- Blizzard's ScrollFrame does not reset to the top on its own -
@@ -1594,6 +1704,7 @@ end
 -- needs to undo the reparenting itself.
 --------------------------------------------------------------------------------
 local standaloneFrame
+local pendingStartSection -- which sidebar page the next build opens on (a skin change reopens on Skin)
 
 local function BuildStandaloneOptionsWindow()
 	if standaloneFrame then return standaloneFrame end
@@ -1702,6 +1813,13 @@ local function BuildStandaloneOptionsWindow()
 	-- thumb scrollbar, not Blizzard's arrow-button style).
 	contentArea:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -Brand.SAFE_MARGIN, Brand.SAFE_MARGIN + 36)
 
+	-- The content area's own fill. A skin with a separate panel color shows it
+	-- here; on the original look it matches the window and doesn't show.
+	local panelFill = f:CreateTexture(nil, "BACKGROUND")
+	panelFill:SetPoint("TOPLEFT", vDivider, "TOPRIGHT", 0, 6)
+	panelFill:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -3, 3)
+	panelFill:SetColorTexture(Brand.PANEL_COLOR[1], Brand.PANEL_COLOR[2], Brand.PANEL_COLOR[3], 1)
+
 	----------------------------------------------------------------
 	-- Home panel - icon-anchored hero moment into detail, not a flat
 	-- stacked paragraph block. Icon centered at top, a bold pull-quote
@@ -1741,7 +1859,8 @@ local function BuildStandaloneOptionsWindow()
 	local homeBody1 = Brand.FS(homePanel,
 		"Quests pile up complete in your log and it's easy to lose track of which ones are actually ready to hand in. I built this addon to fix exactly that - a clean list of what's ready, sorted by distance, with one click to "
 			.. Highlight("navigate") .. " and one click to " .. Highlight("track") .. ".",
-		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 15, "", 0.85, 0.85, 0.85)
+		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 15, "",
+		Brand.BODY_COLOR[1], Brand.BODY_COLOR[2], Brand.BODY_COLOR[3])
 	homeBody1:SetPoint("TOP", homeRule, "BOTTOM", 0, -18)
 	homeBody1:SetWidth(BODY_WIDTH)
 	homeBody1:SetJustifyH("CENTER")
@@ -1749,7 +1868,8 @@ local function BuildStandaloneOptionsWindow()
 
 	local homeBody2 = Brand.FS(homePanel,
 		Highlight("Route All") .. " takes it further: one button plans a route through everything you're ready to turn in and walks you through it, stop by stop.",
-		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 15, "", 0.85, 0.85, 0.85)
+		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 15, "",
+		Brand.BODY_COLOR[1], Brand.BODY_COLOR[2], Brand.BODY_COLOR[3])
 	homeBody2:SetPoint("TOP", homeBody1, "BOTTOM", 0, -14)
 	homeBody2:SetWidth(BODY_WIDTH)
 	homeBody2:SetJustifyH("CENTER")
@@ -1757,7 +1877,8 @@ local function BuildStandaloneOptionsWindow()
 
 	local homeBody3 = Brand.FS(homePanel,
 		"Everything else in this window is where you make it yours.",
-		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 15, "", 0.85, 0.85, 0.85)
+		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 15, "",
+		Brand.BODY_COLOR[1], Brand.BODY_COLOR[2], Brand.BODY_COLOR[3])
 	homeBody3:SetPoint("TOP", homeBody2, "BOTTOM", 0, -14)
 	homeBody3:SetWidth(BODY_WIDTH)
 	homeBody3:SetJustifyH("CENTER")
@@ -1810,7 +1931,8 @@ local function BuildStandaloneOptionsWindow()
 		divider:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -6)
 		divider:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
 
-		local desc = Brand.FS(parent, description, "Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_DESC_FONT_SIZE, "", 0.85, 0.85, 0.85)
+		local desc = Brand.FS(parent, description, "Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_DESC_FONT_SIZE, "",
+			Brand.DESC_COLOR[1], Brand.DESC_COLOR[2], Brand.DESC_COLOR[3])
 		desc:SetPoint("TOPLEFT", divider, "BOTTOMLEFT", 0, -16)
 		desc:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
 		desc:SetJustifyH("LEFT")
@@ -1829,7 +1951,7 @@ local function BuildStandaloneOptionsWindow()
 		cb:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -12)
 		local label = parent:CreateFontString(nil, "OVERLAY")
 		label:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_LABEL_FONT_SIZE, "")
-		label:SetTextColor(0.95, 0.60, 0.10)
+		label:SetTextColor(Brand.TEXT_COLOR[1], Brand.TEXT_COLOR[2], Brand.TEXT_COLOR[3])
 		label:SetPoint("LEFT", cb, "RIGHT", 6, 0)
 		label:SetText("Enabled")
 		cb:SetChecked(isChecked)
@@ -1875,7 +1997,7 @@ local function BuildStandaloneOptionsWindow()
 		track:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", 0, 0)
 		track:SetWidth(8)
 		track:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8" })
-		track:SetBackdropColor(1, 1, 1, 0.08)
+		track:SetBackdropColor(Brand.TRACK_COLOR[1], Brand.TRACK_COLOR[2], Brand.TRACK_COLOR[3], Brand.TRACK_COLOR[4])
 		track:Hide()
 
 		local thumbSlider = CreateFrame("Slider", nil, track)
@@ -2120,7 +2242,7 @@ local function BuildStandaloneOptionsWindow()
 		-- 2026-08-13 via screenshot).
 		local swatchLabel = parent:CreateFontString(nil, "OVERLAY")
 		swatchLabel:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_LABEL_FONT_SIZE, "")
-		swatchLabel:SetTextColor(0.85, 0.85, 0.85)
+		swatchLabel:SetTextColor(Brand.BODY_COLOR[1], Brand.BODY_COLOR[2], Brand.BODY_COLOR[3])
 		swatchLabel:SetPoint("LEFT", swatch, "RIGHT", 8, 0)
 		swatchLabel:SetText("Current color - click to change")
 
@@ -2233,7 +2355,7 @@ local function BuildStandaloneOptionsWindow()
 	classColorCB:SetPoint("TOPLEFT", fontColorDesc, "BOTTOMLEFT", -2, -12)
 	local classColorLabel = fontScrollChild:CreateFontString(nil, "OVERLAY")
 	classColorLabel:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_LABEL_FONT_SIZE, "")
-	classColorLabel:SetTextColor(0.95, 0.60, 0.10)
+	classColorLabel:SetTextColor(Brand.TEXT_COLOR[1], Brand.TEXT_COLOR[2], Brand.TEXT_COLOR[3])
 	classColorLabel:SetPoint("LEFT", classColorCB, "RIGHT", 6, 0)
 	classColorLabel:SetText("Use my class color instead")
 	classColorCB:SetChecked(XalsQuestCompassDB.useClassColor)
@@ -2308,7 +2430,7 @@ local function BuildStandaloneOptionsWindow()
 	compactCB:SetPoint("TOPLEFT", compactDesc, "BOTTOMLEFT", -2, -12)
 	local compactLabel = displayPanel:CreateFontString(nil, "OVERLAY")
 	compactLabel:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_LABEL_FONT_SIZE, "")
-	compactLabel:SetTextColor(0.95, 0.60, 0.10)
+	compactLabel:SetTextColor(Brand.TEXT_COLOR[1], Brand.TEXT_COLOR[2], Brand.TEXT_COLOR[3])
 	compactLabel:SetPoint("LEFT", compactCB, "RIGHT", 6, 0)
 	compactLabel:SetText("Show as a floating icon (uncheck for the bar)")
 
@@ -2320,7 +2442,7 @@ local function BuildStandaloneOptionsWindow()
 	local ICON_NUDGE_STEP = 1
 	local posLabel = displayPanel:CreateFontString(nil, "OVERLAY")
 	posLabel:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_LABEL_FONT_SIZE, "")
-	posLabel:SetTextColor(0.85, 0.85, 0.85)
+	posLabel:SetTextColor(Brand.BODY_COLOR[1], Brand.BODY_COLOR[2], Brand.BODY_COLOR[3])
 	posLabel:SetPoint("TOPLEFT", compactCB, "BOTTOMLEFT", 2, -26)
 	posLabel:SetText("Icon Position (drag the icon on screen, or nudge it here)")
 
@@ -2329,12 +2451,12 @@ local function BuildStandaloneOptionsWindow()
 		box:SetSize(70, 26)
 		box:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, -18)
 		box:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
-		box:SetBackdropColor(0.08, 0.08, 0.1, 0.9)
+		box:SetBackdropColor(Brand.INPUT_BG[1], Brand.INPUT_BG[2], Brand.INPUT_BG[3], Brand.INPUT_BG[4])
 		box:SetBackdropBorderColor(Brand.DIVIDER_COLOR[1], Brand.DIVIDER_COLOR[2], Brand.DIVIDER_COLOR[3], 1)
 
 		local axisText = displayPanel:CreateFontString(nil, "OVERLAY")
 		axisText:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 11, "")
-		axisText:SetTextColor(0.6, 0.6, 0.6, 1)
+		axisText:SetTextColor(Brand.DESC_COLOR[1], Brand.DESC_COLOR[2], Brand.DESC_COLOR[3], 1)
 		axisText:SetPoint("BOTTOMLEFT", box, "TOPLEFT", 2, 2)
 		axisText:SetText(axisLabel)
 
@@ -2346,6 +2468,7 @@ local function BuildStandaloneOptionsWindow()
 		edit:SetNumeric(false)
 		edit:SetMaxLetters(6)
 		edit:SetFontObject(GameFontHighlightSmall)
+		edit:SetTextColor(Brand.BODY_COLOR[1], Brand.BODY_COLOR[2], Brand.BODY_COLOR[3], 1)
 		edit:SetJustifyH("LEFT")
 		edit:SetScript("OnEscapePressed", edit.ClearFocus)
 
@@ -2482,7 +2605,7 @@ local function BuildStandaloneOptionsWindow()
 	elvCB:SetPoint("TOPLEFT", elvDesc, "BOTTOMLEFT", -2, -12)
 	local elvLabel = displayPanel:CreateFontString(nil, "OVERLAY")
 	elvLabel:SetFont("Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", PANEL_LABEL_FONT_SIZE, "")
-	elvLabel:SetTextColor(0.95, 0.60, 0.10)
+	elvLabel:SetTextColor(Brand.TEXT_COLOR[1], Brand.TEXT_COLOR[2], Brand.TEXT_COLOR[3])
 	elvLabel:SetPoint("LEFT", elvCB, "RIGHT", 6, 0)
 	elvLabel:SetText("Enable ElvUI Skinning (Experimental)")
 	elvCB:SetChecked(XalsQuestCompassDB.elvuiSkinning)
@@ -2525,8 +2648,86 @@ local function BuildStandaloneOptionsWindow()
 	----------------------------------------------------------------
 	-- Sidebar tabs - every section has real content now.
 	----------------------------------------------------------------
-	local SECTION_NAMES = { "Home", "Behavior", "Automation", "Font", "Display" }
-	local sectionPanels = { homePanel, behaviorPanel, automationPanel, fontPanel, displayPanel }
+	----------------------------------------------------------------
+	-- Skin panel - just colors (XalsSkins.lua, shared by every Xal's addon);
+	-- the layout never changes. Picking one re-colors every window right away
+	-- (XQC.ApplySkinLive).
+	----------------------------------------------------------------
+	local skinPanel = CreateFrame("Frame", nil, contentArea)
+	skinPanel:SetAllPoints(contentArea)
+	skinPanel:Hide()
+
+	local skinDesc = AddCardHeader(skinPanel, nil, -32, "Skin",
+		"The colors every Quest Compass window uses. The layout never changes.")
+	local Skins = Brand.GetSkins()
+	if Skins then
+		local function HexRgb(hex)
+			local h = hex:gsub("#", "")
+			return tonumber(h:sub(1, 2), 16) / 255, tonumber(h:sub(3, 4), 16) / 255, tonumber(h:sub(5, 6), 16) / 255
+		end
+		local CHOICE_W, CHOICE_H, CHOICE_GAP = 240, 36, 10
+		local firstChoice
+		for i, key in ipairs(Skins.ORDER) do
+			local p = Skins.Get(key)
+			local choice = CreateFrame("Button", nil, skinPanel)
+			choice:SetSize(CHOICE_W, CHOICE_H)
+
+			-- Little preview of the skin: its edge color, its panel, a header bar and a tab bar.
+			local swatch = CreateFrame("Frame", nil, choice)
+			swatch:SetSize(52, CHOICE_H - 8)
+			swatch:SetPoint("LEFT", choice, "LEFT", 0, 0)
+			local edge = swatch:CreateTexture(nil, "BACKGROUND")
+			edge:SetAllPoints()
+			edge:SetColorTexture(HexRgb(p.line))
+			local fill = swatch:CreateTexture(nil, "BORDER")
+			fill:SetPoint("TOPLEFT", 2, -2)
+			fill:SetPoint("BOTTOMRIGHT", -2, 2)
+			fill:SetColorTexture(HexRgb(p.window))
+			local panelPart = swatch:CreateTexture(nil, "ARTWORK")
+			panelPart:SetPoint("TOPLEFT", 18, -2)
+			panelPart:SetPoint("BOTTOMRIGHT", -2, 2)
+			panelPart:SetColorTexture(HexRgb(p.panel))
+			local headerBar = swatch:CreateTexture(nil, "OVERLAY")
+			headerBar:SetPoint("TOPLEFT", 22, -6)
+			headerBar:SetSize(22, 4)
+			headerBar:SetColorTexture(HexRgb(p.header))
+			local tabBar = swatch:CreateTexture(nil, "OVERLAY")
+			tabBar:SetPoint("TOPLEFT", 5, -8)
+			tabBar:SetSize(9, 3)
+			tabBar:SetColorTexture(HexRgb(p.tabSelected))
+
+			local label = choice:CreateFontString(nil, "OVERLAY")
+			label:SetFont(Brand.BODY_FONT_PATH_SEMIBOLD, 15, "")
+			label:SetPoint("LEFT", swatch, "RIGHT", 12, 0)
+			label:SetText(Skins.LABELS[key])
+			local selected = (key == Brand.skinKey)
+			local c = selected and Brand.TAB_SELECTED_COLOR or Brand.BODY_COLOR
+			label:SetTextColor(c[1], c[2], c[3], 1)
+			choice:SetScript("OnEnter", function()
+				label:SetTextColor(Brand.HOVER_COLOR[1], Brand.HOVER_COLOR[2], Brand.HOVER_COLOR[3], 1)
+			end)
+			choice:SetScript("OnLeave", function()
+				local lc = selected and Brand.TAB_SELECTED_COLOR or Brand.BODY_COLOR
+				label:SetTextColor(lc[1], lc[2], lc[3], 1)
+			end)
+			choice:SetScript("OnClick", function()
+				if key == Brand.skinKey then return end
+				-- This window is about to be rebuilt, so wait until the click has finished.
+				C_Timer.After(0, function() XQC.ApplySkinLive(key) end)
+			end)
+
+			if not firstChoice then
+				choice:SetPoint("TOPLEFT", skinDesc, "BOTTOMLEFT", 0, -20)
+				firstChoice = choice
+			else
+				local col, row = (i - 1) % 2, math.floor((i - 1) / 2)
+				choice:SetPoint("TOPLEFT", firstChoice, "TOPLEFT", col * (CHOICE_W + CHOICE_GAP), -row * (CHOICE_H + CHOICE_GAP))
+			end
+		end
+	end
+
+	local SECTION_NAMES = { "Home", "Behavior", "Automation", "Font", "Display", "Skin" }
+	local sectionPanels = { homePanel, behaviorPanel, automationPanel, fontPanel, displayPanel, skinPanel }
 	local tabs = {}
 
 	local function ShowSection(index)
@@ -2564,7 +2765,8 @@ local function BuildStandaloneOptionsWindow()
 		tabs[i] = tab
 		anchorTab = tab
 	end
-	ShowSection(1)
+	ShowSection(pendingStartSection or 1)
+	pendingStartSection = nil
 
 	-- Standing Discord link - bottom of the sidebar (visible on every
 	-- section, not just Home), not the header (the header row is title+Close
@@ -2596,7 +2798,7 @@ local function BuildStandaloneOptionsWindow()
 	local installedVersion = GetInstalledVersion()
 	local versionLabel = (installedVersion == "dev") and "dev build" or ("v" .. installedVersion)
 	local footerText = Brand.FS(f, versionLabel .. "  \194\183  by Xal  \194\183  A Xal's Creation",
-		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 11, "", Brand.GOLD[1], Brand.GOLD[2], Brand.GOLD[3])
+		"Interface\\AddOns\\" .. ADDON_NAME .. "\\Fonts\\FiraSans-Medium.ttf", 11, "", Brand.DESC_COLOR[1], Brand.DESC_COLOR[2], Brand.DESC_COLOR[3])
 	-- Centered within the CONTENT area's span (divider to right border), not
 	-- the whole window - centering across the full width read off-center
 	-- once the sidebar was added, since the sidebar isn't part of this span.
@@ -2607,6 +2809,38 @@ local function BuildStandaloneOptionsWindow()
 	f:Hide()
 	standaloneFrame = f
 	return f
+end
+
+-- Switches skin without a reload. A window keeps the colors it was built with,
+-- so the settings window is dropped and rebuilt in the new colors (reopened on
+-- the Skin page if it was open); the pieces that are built once - the Esc >
+-- Options page, the quest window's title, the flyout's border and the floating
+-- icon's glow - are re-colored in place.
+function XQC.ApplySkinLive(key)
+	local Brand = XQC.BrandStyle
+	XalsQuestCompassDB.skin = Brand.ApplySkin(key)
+
+	local wasOpen = standaloneFrame and standaloneFrame:IsShown()
+	if standaloneFrame then
+		standaloneFrame:Hide()
+		standaloneFrame = nil
+	end
+	pendingStartSection = 6 -- Skin is the sixth sidebar page
+	local f = BuildStandaloneOptionsWindow()
+	if wasOpen then f:Show() end
+
+	if optionsPanel and optionsPanel.ApplySkin then optionsPanel.ApplySkin() end
+
+	local H, L = Brand.HEADER_COLOR, Brand.DIVIDER_COLOR
+	if QTT then
+		QTT.title:SetTextColor(H[1], H[2], H[3])
+		if QTT.flyoutBorder then
+			for _, edge in ipairs(QTT.flyoutBorder) do edge:SetColorTexture(L[1], L[2], L[3], 1) end
+		end
+	end
+	if XQC.compactIcon and XQC.compactIcon.glow then
+		XQC.compactIcon.glow:SetVertexColor(H[1], H[2], H[3])
+	end
 end
 
 local function OpenOptionsPanel()
@@ -2826,8 +3060,11 @@ local function CreateMainFrame()
 	local flyoutMenu = CreateFrame("Frame", nil, QTT, "BackdropTemplate")
 	flyoutMenu:SetSize(200, flyoutHeight)
 	flyoutMenu:SetPoint("TOP", QTT, "BOTTOM", 0, -6)
-	Brand.ApplyBackground(flyoutMenu)
-	Brand.DrawBorder(flyoutMenu)
+	-- Fixed dark, not the skin's window color: its links keep their own yellow/blue/grey so they read over the game world, and those would vanish on a light skin.
+	local flyoutBg = flyoutMenu:CreateTexture(nil, "BACKGROUND")
+	flyoutBg:SetAllPoints()
+	flyoutBg:SetColorTexture(0.03, 0.028, 0.06, 1)
+	QTT.flyoutBorder = { Brand.DrawBorder(flyoutMenu) }
 	flyoutMenu:SetFrameStrata("MEDIUM")
 	flyoutMenu:SetFrameLevel(QTT:GetFrameLevel() + 5)
 	flyoutMenu:Hide()
@@ -3307,9 +3544,11 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
 		HandleQuestComplete()
 	elseif event == "QUEST_TURNED_IN" then
 		HandleQuestTurnedIn(arg1)
+		if IS_FOREVER and arg1 and XalsQuestCompassDB.questSpots then XalsQuestCompassDB.questSpots[arg1] = nil end
 		RefreshList()
 	elseif event == "QUEST_REMOVED" then
 		RemoveQuestFromRoute(arg1)
+		if IS_FOREVER and arg1 and XalsQuestCompassDB.questSpots then XalsQuestCompassDB.questSpots[arg1] = nil end
 		RefreshList()
 	elseif event == "QUEST_LOG_UPDATE" then
 		ValidateRouteAgainstLog()
