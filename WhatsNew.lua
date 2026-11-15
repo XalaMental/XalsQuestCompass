@@ -17,12 +17,13 @@ local Brand = XQC.BrandStyle
 
 -- ── Update this block every release to match CHANGELOG.md ──────
 W.WHATS_NEW = {
-	date = "August 8, 2026",
-	intro = "Route All: one click plans and walks you through every quest you have ready to turn in.",
+	date = "November 15, 2026",
+	intro = "Six skins to choose from, a brighter icon, and real distances on WoW Forever.",
 	sections = {
 		{ heading = "New", items = {
-			"Route All - computes an efficient multi-stop route through every quest ready to turn in, across every zone, and walks you through it. Auto-advances as you turn quests in, and folds in extra quests an NPC turns out to have.",
-			"On Retail, Route All covers every zone and continent. On Classic, it routes what's locatable in your current zone right now - click it again after traveling to pick up more.",
+			"Skins - pick from six color schemes (including a light one) on the new Skin page in settings. Every window re-colors right away.",
+			"WoW Forever - ready quests now remember where they turn in once you've been in their zone, so distance, nearest-first sorting, Navigate and Route All keep working after you leave it.",
+			"A brand-new, brighter and more colorful icon.",
 		} },
 	},
 }
@@ -83,7 +84,7 @@ local function BuildFrame(installedVersion)
 	end
 
 	local verLine = Brand.FS(f, "Version " .. installedVersion .. (data.date and ("  ·  " .. data.date) or ""),
-		"Fonts\\ARIALN.TTF", 12, "", Brand.GOLD[1], Brand.GOLD[2], Brand.GOLD[3])
+		"Fonts\\ARIALN.TTF", 12, "", Brand.DESC_COLOR[1], Brand.DESC_COLOR[2], Brand.DESC_COLOR[3])
 	verLine:SetPoint("TOP", f, "TOP", 0, -58)
 	verLine:SetJustifyH("CENTER")
 
@@ -93,7 +94,8 @@ local function BuildFrame(installedVersion)
 
 	local y = 92
 	if data.intro and data.intro ~= "" then
-		local intro = Brand.FS(f, data.intro, "Fonts\\ARIALN.TTF", 12, "", 0.85, 0.85, 0.85)
+		local intro = Brand.FS(f, data.intro, "Fonts\\ARIALN.TTF", 12, "",
+			Brand.BODY_COLOR[1], Brand.BODY_COLOR[2], Brand.BODY_COLOR[3])
 		intro:SetPoint("TOPLEFT", f, "TOPLEFT", 30, -y)
 		intro:SetWidth(FW - 60)
 		intro:SetJustifyH("LEFT")
@@ -109,7 +111,7 @@ local function BuildFrame(installedVersion)
 
 		for _, item in ipairs(section.items or {}) do
 			local bullet = Brand.FS(f, "-  " .. item, "Fonts\\ARIALN.TTF", 12, "",
-				Brand.GOLD[1], Brand.GOLD[2], Brand.GOLD[3])
+				Brand.BODY_COLOR[1], Brand.BODY_COLOR[2], Brand.BODY_COLOR[3])
 			bullet:SetPoint("TOPLEFT", f, "TOPLEFT", 36, -y)
 			bullet:SetWidth(FW - 76)
 			bullet:SetJustifyH("LEFT")
