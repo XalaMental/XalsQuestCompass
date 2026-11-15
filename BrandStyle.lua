@@ -17,11 +17,32 @@
 XQC = XQC or {}
 XQC.BrandStyle = {}
 local Brand = XQC.BrandStyle
+local addonTable = select(2, ...) -- shared with XalsSkins.lua, which hangs the skin palettes off it
 
 -- ── Colours (r, g, b) ─────────────────────────────────────────
 Brand.ACCENT = { 0.72, 0.30, 0.0 }    -- deep, dark, burnt orange - superseded by Brand.HEADER_COLOR below as of 2026-09-25 ("everything the same dark red, no exceptions"); kept only for an explicit Classic-style option, which this addon doesn't have
-Brand.GOLD   = { 0.60, 0.47, 0.30 }   -- secondary/body text tone (unchanged)
-Brand.BG     = { 0.03, 0.028, 0.06, 1 } -- dark indigo leaning purple, #08070f
+
+-- Skin colors. Every color the settings windows use comes from one of these
+-- tables, and each is filled IN PLACE by the chosen skin (XalsSkins.lua, the
+-- shared family file, via Brand.ApplySkin below). The values written here are
+-- only the Crimson skin's, the load-time starting point. Read a color from
+-- here when something is built - never hardcode one in a window.
+Brand.BG           = { 0.03, 0.028, 0.06, 1 } -- window background
+Brand.WINDOW_BG    = Brand.BG                  -- the skin file names it this; same table
+Brand.PANEL_COLOR  = { 0.03, 0.028, 0.06 }     -- content area
+Brand.TEXT_COLOR   = { 0.4078, 0.0784, 0.0902 } -- checkbox / slider labels
+Brand.BODY_COLOR   = { 0.85, 0.85, 0.85 }      -- plain reading text
+Brand.GOLD         = Brand.BODY_COLOR          -- this addon's old name for body text; same table
+Brand.DESC_COLOR   = { 0.62, 0.62, 0.62 }      -- dim description text
+Brand.TAB_COLOR    = { 0.588, 0.588, 0.824 }   -- sidebar tabs that are not selected
+Brand.TAB_SELECTED_COLOR = { 0.8, 0.188, 0.212 } -- the selected sidebar tab
+Brand.HOVER_COLOR  = { 1, 1, 1 }               -- what a link turns under the mouse
+Brand.IS_LIGHT     = false                     -- true on a light skin
+-- Worked out from the skin by Brand.ApplySkin (not in the palette itself):
+Brand.INPUT_BG       = { 0.1, 0.1, 0.1, 0.6 }  -- checkbox / text box / dropdown fill
+Brand.INPUT_BG_HOVER = { 0.18, 0.18, 0.18, 0.75 }
+Brand.TRACK_COLOR    = { 1, 1, 1, 0.08 }       -- scrollbar track
+Brand.LINK_COLOR     = { 0.45, 0.55, 0.95 }    -- the Discord link
 
 -- Family-wide rollout, confirmed 2026-09-20 (worked out on Xal's Roster
 -- Roundup, then confirmed as the standard for EVERY addon). Narrow, specific
@@ -34,9 +55,9 @@ Brand.HEADER_COLOR = { 0.4078, 0.0784, 0.0902 } -- #681417, dark brick red.
 Brand.DIVIDER_COLOR = { 0.0627, 0.0627, 0.1255 } -- #101020, near-black indigo.
 	-- Every OTHER divider (section/list/sidebar dividers), plus panel/card
 	-- edges (DrawBorder()'s default color) and the outer window border.
-Brand.SIDEBAR_UNSELECTED = { 0.196, 0.196, 0.392 } -- #323264, muted blue-gray.
+Brand.SIDEBAR_UNSELECTED = Brand.TAB_COLOR -- this addon's older name for TAB_COLOR; same table.
 	-- An UNselected link in a standalone window's own sidebar. Selected uses
-	-- Brand.HEADER_COLOR above, not white and not accent-orange.
+	-- Brand.TAB_SELECTED_COLOR.
 Brand.LINE_THICKNESS = 2 -- minimum for ANY border/divider - never go below this
 Brand.SAFE_MARGIN = 14
 
@@ -46,6 +67,40 @@ Brand.SAFE_MARGIN = 14
 Brand.TITLE_FONT_PATH = "Interface\\AddOns\\XalsQuestCompass\\Fonts\\Cinzel-Bold.ttf"
 Brand.BODY_FONT_PATH = "Interface\\AddOns\\XalsQuestCompass\\Fonts\\Inter-Regular.ttf"
 Brand.BODY_FONT_PATH_SEMIBOLD = "Interface\\AddOns\\XalsQuestCompass\\Fonts\\Inter-SemiBold.ttf"
+
+-- ── Skins ─────────────────────────────────────────────────────
+-- Brand.ApplySkin(key) copies a skin's palette into the color tables above (that
+-- part is XalsSkins.lua's Skins.Apply) and then works out the few colors that
+-- are not in the palette but depend on it. Called once at login, before any
+-- window is built; for a live change XQC.ApplySkinLive calls it and rebuilds
+-- the windows, since a widget keeps the color it was built with.
+function Brand.ApplySkin(key)
+	local Skins = addonTable and addonTable.Skins
+	if Skins and Skins.Apply then
+		key = Skins.Apply(Brand, key)
+	else
+		key = "current"
+	end
+	local a, h, t, l = Brand.INPUT_BG, Brand.INPUT_BG_HOVER, Brand.TRACK_COLOR, Brand.LINK_COLOR
+	if Brand.IS_LIGHT then
+		a[1], a[2], a[3], a[4] = 0.78, 0.72, 0.58, 0.7
+		h[1], h[2], h[3], h[4] = 0.70, 0.63, 0.48, 0.85
+		t[1], t[2], t[3], t[4] = 0, 0, 0, 0.10
+		l[1], l[2], l[3] = 0.12, 0.31, 0.60
+	else
+		a[1], a[2], a[3], a[4] = 0.1, 0.1, 0.1, 0.6
+		h[1], h[2], h[3], h[4] = 0.18, 0.18, 0.18, 0.75
+		t[1], t[2], t[3], t[4] = 1, 1, 1, 0.08
+		l[1], l[2], l[3] = 0.45, 0.55, 0.95
+	end
+	return key
+end
+Brand.ApplySkin("current") -- the load-time default; the saved choice is applied at login (InitDB)
+
+-- The shared palette list (XalsSkins.lua), for the Skin page's picker.
+function Brand.GetSkins()
+	return addonTable and addonTable.Skins
+end
 
 -- ── T()  ─ solid-colour texture rectangle.
 function Brand.T(parent, x, y, w, h, r, g, b, a, layer)
@@ -150,11 +205,11 @@ function Brand.MakeButton(parent, text, w, h, onClick)
 	-- family-wide sidebar link colors instead (narrowly scoped to sidebar
 	-- links only): btn:SetSelectedColor(unpack(Brand.HEADER_COLOR)) /
 	-- btn:SetUnselectedColor(unpack(Brand.SIDEBAR_UNSELECTED)).
-	btn.selectedColor = { 1, 1, 1 }
+	btn.selectedColor = Brand.HOVER_COLOR
 	btn.unselectedColor = BTN_LABEL_UNSELECTED
 
 	btn:SetScript("OnEnter", function(self)
-		if not self.selected then label:SetTextColor(1, 1, 1, 1) end
+		if not self.selected then label:SetTextColor(Brand.HOVER_COLOR[1], Brand.HOVER_COLOR[2], Brand.HOVER_COLOR[3], 1) end
 	end)
 	btn:SetScript("OnLeave", function(self)
 		if not self.selected then
@@ -211,7 +266,7 @@ function Brand.MakeButtonElvUI(S, parent, text, w, h, onClick)
 	function btn:SetSelected(selected)
 		self.selected = selected
 		if selected then
-			label:SetTextColor(1, 1, 1, 1)
+			label:SetTextColor(Brand.HOVER_COLOR[1], Brand.HOVER_COLOR[2], Brand.HOVER_COLOR[3], 1)
 		else
 			label:SetTextColor(BTN_LABEL_UNSELECTED[1], BTN_LABEL_UNSELECTED[2], BTN_LABEL_UNSELECTED[3], 1)
 		end
@@ -238,7 +293,7 @@ function Brand.MakeCloseButton(parent, onClick)
 	label:SetTextColor(Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3], 1)
 	btn.label = label
 
-	btn:SetScript("OnEnter", function() label:SetTextColor(1, 1, 1, 1) end)
+	btn:SetScript("OnEnter", function() label:SetTextColor(Brand.HOVER_COLOR[1], Brand.HOVER_COLOR[2], Brand.HOVER_COLOR[3], 1) end)
 	btn:SetScript("OnLeave", function()
 		label:SetTextColor(Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3], 1)
 	end)
@@ -278,12 +333,12 @@ function Brand.MakeLinkButton(parent)
 	end
 
 	-- For link buttons used as tabs (e.g. a sidebar) - selected reads
-	-- Brand.HEADER_COLOR (the family-wide "selected sidebar link" color,
-	-- confirmed 2026-09-20), unselected drops back to the button's own base
-	-- color (a plain one-shot link button never calls this at all).
+	-- Brand.TAB_SELECTED_COLOR (the skin's selected-tab color), unselected
+	-- drops back to the button's own base color (a plain one-shot link button
+	-- never calls this at all).
 	function btn:SetSelected(selected)
 		self.selected = selected
-		local c = selected and Brand.HEADER_COLOR or (self.baseColor or { 1, 1, 1 })
+		local c = selected and Brand.TAB_SELECTED_COLOR or (self.baseColor or { 1, 1, 1 })
 		self.label:SetTextColor(c[1], c[2], c[3])
 	end
 
@@ -291,10 +346,10 @@ function Brand.MakeLinkButton(parent)
 	-- OnLeave too (e.g. a tooltip), and HookScript lets both run instead of
 	-- whichever is set second silently replacing this one.
 	btn:HookScript("OnEnter", function(self)
-		self.label:SetTextColor(1, 1, 1, 1)
+		self.label:SetTextColor(Brand.HOVER_COLOR[1], Brand.HOVER_COLOR[2], Brand.HOVER_COLOR[3], 1)
 	end)
 	btn:HookScript("OnLeave", function(self)
-		local c = self.selected and Brand.HEADER_COLOR or (self.baseColor or { 1, 1, 1 })
+		local c = self.selected and Brand.TAB_SELECTED_COLOR or (self.baseColor or { 1, 1, 1 })
 		self.label:SetTextColor(c[1], c[2], c[3])
 	end)
 
@@ -343,13 +398,14 @@ function Brand.MakeDiscordLink(parent)
 
 	btn.label:ClearAllPoints()
 	btn.label:SetPoint("LEFT", icon, "RIGHT", 5, 0)
-	btn:SetLabel("Discord", { 0.45, 0.55, 0.95 })
+	btn:SetLabel("Discord", Brand.LINK_COLOR)
 	-- SetLabel sizes the button to the text alone, which left the icon hanging outside the right edge.
 	PixelUtil.SetWidth(btn, icon:GetWidth() + 5 + btn.label:GetStringWidth())
 
-	btn:HookScript("OnEnter", function() icon:SetVertexColor(1, 1, 1, 1) end)
-	btn:HookScript("OnLeave", function() icon:SetVertexColor(0.45, 0.55, 0.95, 1) end)
-	icon:SetVertexColor(0.45, 0.55, 0.95, 1)
+	local L = Brand.LINK_COLOR
+	btn:HookScript("OnEnter", function() icon:SetVertexColor(Brand.HOVER_COLOR[1], Brand.HOVER_COLOR[2], Brand.HOVER_COLOR[3], 1) end)
+	btn:HookScript("OnLeave", function() icon:SetVertexColor(L[1], L[2], L[3], 1) end)
+	icon:SetVertexColor(L[1], L[2], L[3], 1)
 
 	btn:SetScript("OnClick", function()
 		StaticPopup_Show("XALQC_COPY_URL", nil, nil, Brand.DISCORD_URL)
@@ -380,7 +436,8 @@ function Brand.MakeCheckbox(parent, size)
 
 	local bg = cb:CreateTexture(nil, "BACKGROUND")
 	bg:SetAllPoints()
-	bg:SetColorTexture(0.1, 0.1, 0.1, 0.6)
+	local I, IH = Brand.INPUT_BG, Brand.INPUT_BG_HOVER
+	bg:SetColorTexture(I[1], I[2], I[3], I[4])
 
 	local thick = Brand.LINE_THICKNESS
 	local r, g, b = Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3]
@@ -430,8 +487,8 @@ function Brand.MakeCheckbox(parent, size)
 		return self.checked
 	end
 
-	cb:SetScript("OnEnter", function() bg:SetColorTexture(0.18, 0.18, 0.18, 0.75) end)
-	cb:SetScript("OnLeave", function() bg:SetColorTexture(0.1, 0.1, 0.1, 0.6) end)
+	cb:SetScript("OnEnter", function() bg:SetColorTexture(IH[1], IH[2], IH[3], IH[4]) end)
+	cb:SetScript("OnLeave", function() bg:SetColorTexture(I[1], I[2], I[3], I[4]) end)
 	cb:SetScript("OnClick", function(self)
 		self:SetChecked(not self.checked)
 		if self.OnToggle then self.OnToggle(self) end
@@ -449,7 +506,7 @@ function Brand.MakeEditBox(parent, w, h)
 
 	local bg = box:CreateTexture(nil, "BACKGROUND")
 	bg:SetAllPoints()
-	bg:SetColorTexture(0.1, 0.1, 0.1, 0.6)
+	bg:SetColorTexture(Brand.INPUT_BG[1], Brand.INPUT_BG[2], Brand.INPUT_BG[3], Brand.INPUT_BG[4])
 
 	local thick = Brand.LINE_THICKNESS
 	local r, g, b = Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3]
@@ -479,7 +536,7 @@ function Brand.MakeEditBox(parent, w, h)
 	borderRight:SetColorTexture(r, g, b, 1)
 
 	box:SetFont(Brand.BODY_FONT_PATH, 13, "")
-	box:SetTextColor(0.9, 0.9, 0.9, 1)
+	box:SetTextColor(Brand.BODY_COLOR[1], Brand.BODY_COLOR[2], Brand.BODY_COLOR[3], 1)
 	box:SetTextInsets(6, 6, 0, 0)
 	box:SetAutoFocus(false)
 
@@ -572,14 +629,15 @@ function Brand.MakeDropdown(parent, width)
 	local dd = CreateFrame("Button", nil, parent, "BackdropTemplate")
 	PixelUtil.SetSize(dd, width, height)
 	dd:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8" })
-	dd:SetBackdropColor(0.1, 0.1, 0.1, 0.6)
+	local I, IH = Brand.INPUT_BG, Brand.INPUT_BG_HOVER
+	dd:SetBackdropColor(I[1], I[2], I[3], I[4])
 	Brand.DrawBorder(dd, 0)
 
 	local label = dd:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	label:SetPoint("LEFT", 10, 0)
 	label:SetPoint("RIGHT", -22, 0)
 	label:SetJustifyH("LEFT")
-	label:SetTextColor(0.9, 0.9, 0.9)
+	label:SetTextColor(Brand.BODY_COLOR[1], Brand.BODY_COLOR[2], Brand.BODY_COLOR[3])
 	dd.label = label
 
 	local arrow = dd:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -587,8 +645,8 @@ function Brand.MakeDropdown(parent, width)
 	arrow:SetText("v")
 	arrow:SetTextColor(Brand.HEADER_COLOR[1], Brand.HEADER_COLOR[2], Brand.HEADER_COLOR[3])
 
-	dd:SetScript("OnEnter", function(self) self:SetBackdropColor(0.18, 0.18, 0.18, 0.75) end)
-	dd:SetScript("OnLeave", function(self) self:SetBackdropColor(0.1, 0.1, 0.1, 0.6) end)
+	dd:SetScript("OnEnter", function(self) self:SetBackdropColor(IH[1], IH[2], IH[3], IH[4]) end)
+	dd:SetScript("OnLeave", function(self) self:SetBackdropColor(I[1], I[2], I[3], I[4]) end)
 
 	-- List panel: sized to exactly fit its own rows (no fixed height that
 	-- could either clip a long list or leave dead space on a short one -
@@ -634,6 +692,7 @@ function Brand.MakeDropdown(parent, width)
 				text:SetPoint("LEFT", 8, 0)
 				text:SetPoint("RIGHT", -8, 0)
 				text:SetJustifyH("LEFT")
+				text:SetTextColor(Brand.BODY_COLOR[1], Brand.BODY_COLOR[2], Brand.BODY_COLOR[3])
 				row.text = text
 				self.rows[i] = row
 			end
