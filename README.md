@@ -9,7 +9,7 @@ Classic, Classic Era, and WoW Forever.
 - **Floating alert icon** — a small icon that stays dark until a quest is ready, then glows; hover it for the list, click it to open the full window (the minimized bar is still available as an option)
 - **Ready-to-turn-in list** — automatically detects every completed quest in your log, one at a time, nearest first
 - **Zone filter** — one-click toggle between This Zone Only and All Zones
-- **Live distances** — shown on Retail; on Classic and Forever, quests in your current zone show as "nearby"
+- **Live distances** — in yards on Retail; on WoW Forever the turn-in spot of each ready quest is remembered once you've been in its zone, so distance, sorting, Navigate and Route All keep working after you leave; on Classic Era and MoP Classic, quests in your current zone show as "nearby"
 - **One-click navigation** — uses TomTom's `/way` command if installed, falls back to WoW's native SuperTrack arrow otherwise
 - **Route All** — plans a multi-stop route through every ready quest and walks you through it stop by stop
 - **Quest tracking** — add/remove any turn-in from your objective tracker without leaving the window
@@ -17,6 +17,7 @@ Classic, Classic Era, and WoW Forever.
 - **Reset warning** — a ready daily or weekly quest warns you once it's under an hour from resetting
 - **Auto-show** — optionally pop the window open the moment a quest becomes ready
 - **Optional automation** — auto turn-in, auto accept, and a ready sound, all off by default; hold Shift to pause them
+- **Six skins** — Crimson, Ember, Bronze ledger, Midnight, Indigo slate and Parchment (light); pick one in settings and every window re-colors right away
 - **Full appearance customization** — font, size, outline, shadow, class-color text, window scale, optional ElvUI skinning
 - **Minimap button** — left-click for settings, right-click to toggle the quest list
 
